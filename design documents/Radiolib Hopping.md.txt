@@ -2,7 +2,7 @@
 
 ## Overview
 
-Rewrite radio handling for both rocket and base station using RadioLib, replacing the current low-level SPI implementation. The primary goals are reliability, hopping support from day one, and an architecture that can accommodate relays, multiple modulations, and power management without later structural changes.
+Rewrite radio handling for both rocket and base station using RadioLib, replacing the current low-level lora-net/sx1262 driver implementation. The primary goals are reliability, hopping support from day one, and an architecture that can accommodate relays, multiple modulations, and power management without later structural changes.
 
 This document covers the target architecture. Implementation is phased (see bottom). It supersedes the previous `Radiolib Hopping.md` and `Hopping radio slot structure.md`.
 
@@ -257,3 +257,22 @@ Slot-phase offset per rocket. Extend to 50 channels for FCC (same hop function, 
 - **Multi-page GFSK telem.** If wideband GFSK fits multiple pages per slot, the one-page-per-slot assumption needs revisiting. Defer to Phase 2 evaluation.
 - **WIN_CONTINUE and overrun counter.** WIN_CONTINUE slots do not increment the overrun counter; only unexpected overruns do. Confirm the safety cutout does not count WIN_CONTINUE as an overrun.
 - **`Hopping radio slot structure.md`** — superseded by this document. Can be deleted or archived.
+
+
+
+
+
+
+priority fixes:
+
+minimum slot type support: telem, cmd, off, lr, continue
+lr packets have implicit headers, no crc. command have explicit headers, different cr,sf,bw,etc. telem is currently planned to be gfsk but may be lora in future based on testing. future intention to replace crc with hmac in payload; and to change fec settings, e.g. 4/6 or 4/8 - differently for each slot type.
+remember, calculation of radio settings cant be done based on which slot you're currently in, you might have started recieving from a previous slot - you must store what the radio is actually using. radio settings can be changed at runtime by config, so you must store the actual settings, not just the slot type that started the tx/rx operation (currently the command for change radio settings is outdated; to be fixed )
+slots are the duration, but the event happens at the start of each slot. for now, the loop jitter before starting and the time between beginning the command sequence to do it vs the actual tx/rx start time is ignored and assumed to be zero or consistent.
+fix docs - it assumes telem is lora, incorrect. its gfsk. this means it needs to reset the modems between slots. we can go with lora for now, but remember when we switch to gfsk, you might need to fully reset the modem between every slot (except continue)
+multiple slot sequences - 
+e.g.standard: [telem,telem,telem,cmd,telem,telem,telem,cmd,telem,lr,continue]
+e.g.power save: [telem,continue,continue,cmd,off,off,off,off,off,LR,continue,continue]
+e.g.bench testing [telem,cmd]
+TODO: is off and continue the same? the previous should end and turn off back to standby - or do we want to force it to off, not just continue if something went wrong and it didnt stop? should the rx time also increase? or is scanning a non-slotted setup?
+
