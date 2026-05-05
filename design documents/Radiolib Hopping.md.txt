@@ -268,11 +268,51 @@ priority fixes:
 minimum slot type support: telem, cmd, off, lr, continue
 lr packets have implicit headers, no crc. command have explicit headers, different cr,sf,bw,etc. telem is currently planned to be gfsk but may be lora in future based on testing. future intention to replace crc with hmac in payload; and to change fec settings, e.g. 4/6 or 4/8 - differently for each slot type.
 remember, calculation of radio settings cant be done based on which slot you're currently in, you might have started recieving from a previous slot - you must store what the radio is actually using. radio settings can be changed at runtime by config, so you must store the actual settings, not just the slot type that started the tx/rx operation (currently the command for change radio settings is outdated; to be fixed )
-slots are the duration, but the event happens at the start of each slot. for now, the loop jitter before starting and the time between beginning the command sequence to do it vs the actual tx/rx start time is ignored and assumed to be zero or consistent.
+slots are a duration, but the event happens at the start of each slot. given that many packets can exceed one slot, it may be more useful to conceptualise it as merely the events, not the entireity of the duration of each slot
+for now, the loop jitter before starting and the time between beginning the command sequence to do it vs the actual tx/rx start time is ignored and assumed to be zero or consistent.
 fix docs - it assumes telem is lora, incorrect. its gfsk. this means it needs to reset the modems between slots. we can go with lora for now, but remember when we switch to gfsk, you might need to fully reset the modem between every slot (except continue)
+remember, base station needs to start listening early, which may overlap the previous slot - depending on modulation settings and payload size, the previous might be done, or might be still running - but if the previous is still running, its ok to startlistening late. same with rocket rx, its ok to start listening late; but dont tx late.
 multiple slot sequences - 
 e.g.standard: [telem,telem,telem,cmd,telem,telem,telem,cmd,telem,lr,continue]
 e.g.power save: [telem,continue,continue,cmd,off,off,off,off,off,LR,continue,continue]
 e.g.bench testing [telem,cmd]
-TODO: is off and continue the same? the previous should end and turn off back to standby - or do we want to force it to off, not just continue if something went wrong and it didnt stop? should the rx time also increase? or is scanning a non-slotted setup?
+TODO: is off and continue the same? the previous should end and turn off back to standby - or do we want to force it to off, not just continue if something went wrong and it didnt stop? should the rx time also increase? or is scanning a pure non-slotted setup?
+TODO: should base station be allowed to delay tx of command until after rx? a long telem could consistently cut off command window starting timesa - but the rocket will start listening eventually, and should be able to catch it. maybe a min turnaround time for rx to tx on base?
+TODO: can we get under 16 slots, fit in existing flags? can we squeeze some more out of what we have? should we change to a new format from 0zaf if we break compatibility to make it easier to spot outdated code? should we add the multi-record format at the same time, since we're changing the header anyway (add length byte to data page, rather than inferring it from the total length; so we can allow multiple pages - or should that just be a page type, saving 2 bytes on single page packets?)
+
+
+commentary/notes:
+propagation delay is not necesarily sub microsecond. it will be sub millisecond. this is a supersonic model rocket, to 30k alt. different modulations are more tollerant to doppler
+
+
+
+
+Main: 
+I want to address a number of bugs, false assumptions and architectural issues that have crept into the radio design. It was an architecture I originally wanted to have more features, but many got pulled out for debugging, or a simplified version for testing, or temporarily for initial setup, and now it can't really support what i wanted to do with it anymore, e.g. the active sync is far too much a fundamental structural concept, and once it sends the message it assumes it's in sync immediately, that it was heard sucessfully (even though the other side only listens about half the time), and that its locked in forever, all incorrect.
+I think the main source of bugs is our use of the raw low-level lora-net/sx-1262 driver, rather than the abstractions provided by radiolib.
+Also, there were very tight timing constraints for the rocket loop, which made it basically impossible to do multiple spi transactions without an overly complicated state machine that caused its own issues. I've decided to allow a longer time limit, since this version of the tracker is moving away from active flight control/tvc, and will just do pyro - it still needs 10ms limit because it still controls pyro charges, and i'd still like to account for anything that could ever be over 100usec in the budget, but its no longer a hard limit.
+I want frequency hopping, with passive sync, so multiple base stations can all sync to the same rocket.
+I want fast regular telemetry, commands, and super long-range packets, each in a different modulation, gfsk/lora, and speed/bitrate/etc settings.
+I want to be able to establish and maintain tight timing sync, which is needed for frequency hopping, but also allows for optional low power (avoid rx other than exact timing window).
+The low power can be later. for now, listen whenever not busy doing something else. the main limitation is the fact there's only one radio, so it can only do one thing at a time, and some packets are longer than how often i want telemetry.
+I'd like to have most of it configurable in a single place, especially any settings which must be common to rx and tx should have one files used by both, not changed in two places.
+For sync, i want the rocket to transmit telemetry packets on a regular basis, with occasional times which are allocated for the rocket to listen and the base station to send commands. I also want long-range packets, on a different modulation, with very limited payload (win_lr).
+I'm interested in trying GFSK, especially for the main telemetry, it seems to have better performance at the edge of range. I also want to be able to change the settings to tweak and find what works best.
+
+Concretely, I'm thinking to have 4 telemetry slots, then a command slot, then 4 more telem, then a long-range slot with extra length.
+i.e. telemetry should fit within the 250ms window; but commands will be at a slower modulation, and wont fit - but 99% of the time, there is no command. the base station can queue up a command and send it at the right time, and the rocket can detect that a packet has started, and keep listening, even though the time slot should have moved to the next telem packet, keep listening.
+The current approach tries to do the listening using the sx1262 built in timer cancellation - if it heads the preamble/headervalid, it will cancel the timeout, and keep running - but we need to respect that and allow it to keep going - but we need to have limits - if too many slots overrun, then we should force it back to standby and go back to normal (i think this is currently a flag, but we want 4 slots allowed) - but this approach has been a little buggy - i think some modes, (i think its from implicit headers) dont cancel the timeout, so it ends up permanently busy, etc
+Commands will typically overun the slot. telem will usually fit within the slot.
+Long-range packets will typically overrun one or more slots. (the slot type after lr is meaningless because it always overruns)
+
+
+I'd like to explicitly have in scope, for phase 2, the relay functionality. base stations randomly resend their last known good telemetry, for other bases to hear.
+Base stations with no command to send should listen on backhaul channel/modulation during the command window. Base stations should pick a random time 60-120 sec to resend their last good telem on backhaul for other base stations. This packet should differ from the existing 0zaf format, so it doesnt confuse timelines, since it could be old data, and because it also has extra metadata, etc.
+
+
+Actions:
+when starting tradio, record what settings actually in use - we can't calculate it from the slot - and this needs to be more than just an enum, since radio settings can be configured, leaving it thinking its on the new settings when its acually on the old
+on the rocket, simple timing - on the first loop of a new slot, if there's no incoming packet, switch to the new mode and do it. if there is, allow up to the limit.
+on the base station, slightly before a telemetry slot, a base station should listen on the telem modulation, on the upcoming hop channel.
+
 
