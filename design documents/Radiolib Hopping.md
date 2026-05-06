@@ -31,35 +31,38 @@ Start listening 20ms early (before the expected slot start, on the next hop chan
 
 ## Frequency Hopping
 
-- Default: 23 channels, selected from AU915 upper band (channels 64–86, ~902–914 MHz, 200kHz spacing)
+- Default: 23 channels, selected from AU915 upper band (channels 64–86, ~902–914 MHz, 200kHz spacing) (EDIT: no, 915-928, as per existing code 0-63)
 - Hop sequence: Fisher-Yates shuffle of channel indices, hardcoded seed, deterministic pure function of slot index
 - All rocket TX hops. **Command channel is fixed** — see Command Path.
 - Hop function: `channel = HOP_SEQUENCE[slot_index % NUM_CHANNELS]`
 - `NUM_CHANNELS` (23) and the full hop sequence are defined in `radio_config.h`
 - FCC extension: increase `NUM_CHANNELS` to 50+ with a longer Fisher-Yates seed; same function, longer period
 
-The hop sequence length and slot sequence length must be **coprime** so all (slot_type, channel) combinations are eventually visited.
+The hop sequence length and slot sequence length must be **coprime** so all (slot_type, channel) combinations are eventually visited. (EDIT: all combinations equal, but the goal is actually just all channels get equal usage, given that slots have different airtime, etc, i.e. we cant always do LR on a specific channel like if they werent coprime)
+
+(EDIT: the hopping sequence excludes the current command channel. do the fisher yates of the full 64, then if the command channel was selected in the 23, then swap it with the 23+1th - this way most of the channels are the same regardless of the current command channel, so the whole thing doesnt shuffle when command channel changes, just swap command channel with the 24th item in the shuffled list. when changing command channel, rederive the list and swap again, since the n+1th item in the list might have been swapped)
 
 ---
 
 ## Slot Sequence
 
 A fixed repeating sequence of slot types, defined in `radio_config.h`. Length must be coprime with `NUM_CHANNELS`.
+(EDIT: selectable sequences for different modes)
 
 **Slot types:**
 - `WIN_TELEM` — rocket TX telemetry, base RX. Hopped channel, telemetry modulation.
-- `WIN_CMD` — base TX command OR relay TX, rocket RX. Fixed command channel, command modulation.
+- `WIN_CMD` — base TX command OR relay TX, rocket RX. Fixed command channel, command modulation. (EDIT: a command base to rocket is fixed command modulation. but the free timeslot is base with nothing to send listens on backhaul modulation or random tx on backhaul modulation. if multiple cmd slots, then rocket does single rx with longer timeout)
 - `WIN_LR` — rocket TX long-range location. Hopped channel, LR modulation. Always overruns into the following WIN_CONTINUE.
 - `WIN_CONTINUE` — explicit no-op. Allocated immediately after any slot that always overruns (e.g. WIN_LR). The radio is left in whatever state the previous slot put it in; no slot action is taken and the overrun counter is not incremented.
-- `WIN_OFF` — radio in standby. Used in low-power cycle variants.
+- `WIN_OFF` — radio in standby. Used in low-power cycle variants. (EDIT: This is often equivalent to continue, because the radio is off after the previous anyway. might combine these)
 
-`WIN_CONTINUE` is the mechanism for handling always-overrunning slots. Variable-length slot arithmetic (`if slot 3 is 2x long, what slot are we in at time T?`) is avoided entirely — slot index is always `floor(time / SLOT_DURATION) % SLOT_SEQUENCE_LEN`.
+`WIN_CONTINUE` is the mechanism for handling always-overrunning slots. Variable-length slot arithmetic (`if slot 3 is 2x long, what slot are we in at time T?`) is avoided entirely — slot index is always `floor(time / SLOT_DURATION) % SLOT_SEQUENCE_LEN`. (EDIT: note that things can overrun, this is just to avoid putting a slot that would be otherwise unused and confusing, e.g. lr,cmd would make the base think theres a usable command window, but the rocket would always be busy overrunning from the lr)
 
 **Current sequence (subject to tuning):**
 ```
-TELEM, TELEM, TELEM, CMD, TELEM, TELEM, TELEM, CMD, TELEM, LR, CONTINUE, CMD
+TELEM, TELEM, TELEM, LR, CONTINUE, TELEM, TELEM, CMD, TELEM, TELEM, TELEM
 ```
-Length 12 (coprime with 23 channels → full coverage every 276 slots ≈ 55 seconds).
+Length 12 (coprime with 23 channels → full coverage every 276 slots ≈ 55 seconds). (EDIT: no, changed to 11)
 
 **Slot index derivation:**  
 `slot_type = SLOT_SEQUENCE[slot_index % SLOT_SEQUENCE_LEN]`  
@@ -82,15 +85,20 @@ Rules:
 4. `WIN_CONTINUE` is an explicit no-op — the overrun counter is **not** incremented for it. It is expected to be mid-packet.
 5. Commands usually produce dead air (no command pending → RX with 150ms timeout). If `PreambleDetected` fires before timeout expiry, the radio keeps listening past 150ms. Let it. If it overruns into the next slot, apply rule 2 for that next slot.
 
+(EDIT: that might not be the right logic. i think it should be more about rxdone vs timeout, or the busy status, but preamble/header interupts are also informative. the timeout is generated by the sx1262 itself - and it intenally cancels the timeout when a packet is detected, at sync word, which isnt something we can hook into, but is a better hook for this)
+
 **IRQ usage:**  
 SX1262 exposes `PreambleDetected` and `HeaderValid` as first-class IRQs on DIO1. Use `setDio1Action()` with a combined IRQ mask including these plus `RxDone`, `TxDone`, `Timeout`, and `CrcErr`. Poll `getIrqFlags()` at slot boundaries — non-blocking, ~10µs.
+(EDIT: no, the getirqstatus must be done immediately in every loop, you cant wait for the next slot because multiple different interupts will happen by then. in the interupt handler, save the dio1 time (for unknown irq reason), then in next loop, if dio1, getirqstatus and put the time into the appropriate timer for preamble/header/rxdone/etc, then use those for drift calc afer we have the full packet so we can use the exact timers for drift calc, without jitter from loop - cant getirqstatus in the isr because its spi, so just save the dio1 time in each interupt, then put that time into the right timer in next loop when getirq, then apply those timers after rxdone for drift calc)
+
+
 
 ```cpp
 // Setup
 radio.setDio1Action(onDio1);
 radio.setDioIrqParams(RADIOLIB_SX126X_IRQ_ALL, RADIOLIB_SX126X_IRQ_ALL);
 
-// At each slot boundary (non-blocking)
+// At each slot boundary (non-blocking)(EDIT: nope - dont wait for slot)
 uint16_t flags = radio.getIrqFlags();
 bool preamble  = flags & RADIOLIB_SX126X_IRQ_PREAMBLE_DETECTED;
 bool header    = flags & RADIOLIB_SX126X_IRQ_HEADER_VALID;
@@ -98,8 +106,8 @@ bool rxDone    = flags & RADIOLIB_SX126X_IRQ_RX_DONE;
 bool txDone    = flags & RADIOLIB_SX126X_IRQ_TX_DONE;
 bool timeout_  = flags & RADIOLIB_SX126X_IRQ_TIMEOUT;
 ```
-
-The DIO1 ISR only sets a volatile flag. All logic runs in `loop()`.
+(EDIT: nope - that code is wrong)
+The DIO1 ISR only sets a volatile flag. All logic runs in `loop()`. (EDIT: ISR also sets the timer from micros() - important for accurate time, usable when we know which interupt it was for)
 
 ---
 
@@ -114,14 +122,18 @@ The DIO1 ISR only sets a volatile flag. All logic runs in `loop()`.
 | WIN_OFF | standby | — |
 
 GFSK is a future option for WIN_TELEM. Narrowband GFSK may outperform LoRa at range; wideband GFSK may allow multi-page telemetry per slot. Neither is defined yet — bench testing needed. The architecture must not assume telemetry will always be LoRa.
+(EDIT: note gfsk needs a bigger restart of the radios than just changing between lora settings. gfsk might be better at high error rates, vs lora getting no packets. lr/cmd might also be configurable at runtime)
 
 Exact modulation parameters are **configurable via `SET_RADIO_PARAMS` command** and should not be hardcoded in logic. Use named constant structs from `radio_config.h`. Each slot type has its own modulation config; they may differ and will change.
+
+(EDIT: because each slot type has its own modulation settings, but they can change at runtime, this means the "current" settings might not match the slot config - so save full settings when starting a radio operation, not just save which slot type enum, e.g. sf9 rx, then change to sf5, then calc airtime would be wrong because it was actually recieved with sf9 but the settings say sf5 when the calc was done after the packet finished, or change hopping seed would think we're on the wrong channel, etc)
 
 ---
 
 ## Telemetry Header — Slot Sequence Byte
 
 Add 1 byte to the 0xAF telemetry header: `uint8_t slot_seq_index` = `slot_index % SLOT_SEQUENCE_LEN` at time of transmission.
+(EDIT: might be able to fit this ino the existing reserved bits)
 
 This allows the base station to:
 - Determine which slot in the sequence the rocket believes it's in
@@ -135,10 +147,11 @@ The received channel is known from context (the frequency we were listening on);
 ## Long-Range Packets
 
 WIN_LR packets are extremely payload-limited. At SF12/BW125, airtime for a few bytes exceeds 400ms — always overruns the 200ms slot, hence always followed by WIN_CONTINUE.
+(EDIT: others might overrun, e.g. command will overruyn if there is an actual command, but lr always overruns, so the following slot is meaningless. continue avoids confusion)
 
-- Payload: ~3 bytes — packed GPS coordinates + flags. Exact format TBD.
-- Only 1 LR slot in the sequence. The receiver knows it's an LR packet by its modulation; the channel is confirmed by hop function + slot index.
-- Acquisition via LR packets is architecturally possible but not implemented in phase 2. Telemetry-based acquisition is the primary path.
+- Payload: ~3 bytes — packed GPS coordinates + flags. Exact format TBD. (EDIT: format in packet formats doc)
+- Only 1 LR slot in the sequence. The receiver knows it's an LR packet by its modulation; the channel is confirmed by hop function + slot index. (EDIT: i.e. it doesnt need to say its slot index, because theres only one lr, so the index can be inferred)
+- Acquisition via LR packets is architecturally possible but not implemented in phase 2. Telemetry-based acquisition is the primary path. (EDIT: also because the percentage of telem is so much higher, easier to catch)
 
 ---
 
@@ -147,24 +160,21 @@ WIN_LR packets are extremely payload-limited. At SF12/BW125, airtime for a few b
 **Fixed channel, not hopped.** The command channel is the same for all base stations and relays. This is the only time the rocket is guaranteed not to be transmitting.
 
 **Rocket during WIN_CMD:**  
-Switch to fixed command channel and command modulation. Start RX with 150ms timeout. If `PreambleDetected` fires: keep listening, do not enforce slot boundary until packet completes or safety cutout triggers. If `RxDone` fires: process command, resume slot tracking. If timeout fires with no preamble: resume next slot normally.
+Switch to fixed command channel and command modulation. Start RX with 150ms timeout. If `PreambleDetected` fires: keep listening, do not enforce slot boundary until packet completes or safety cutout triggers. If `RxDone` fires: process command, resume slot tracking. If timeout fires with no preamble: resume next slot normally. (EDIT: the :keep listening" logic is internal to the radio.. it just wont fire a timeout, so listen for the rxdone/etc as normal - the point here is dont interupt it if busy when the next slot starts)
 
 **Base station during WIN_CMD:**  
-- If command queued: wait 5ms from slot start, TX. No CSMA — timing must be exact. Accept that collisions with relay traffic are possible; rely on retry.
+- If command queued: wait 5ms from slot start, TX. No CSMA — timing must be exact. Accept that collisions with relay traffic are possible; rely on retry. (EDIT: there is existing logic in command sending for optional wai for slot, and optional multi-send. currently, multisend is jammed together with no slot timing delays. later might have it wait again and resend on next cmd window, using the same nonce, so it would be ignored if rocket did get the first one. but for now the wait for slot then send x times is fine. )
 - If no command queued and not in relay-send window: start RX with 150ms timeout (same overrun logic). Log any received relay packet; do not re-relay.
 - If in relay-send window: TX relay packet (see Relay section).
-
-**Command queue:**  
-Replace the current boolean flag with a proper FIFO queue. Multiple commands can be enqueued. Each is sent in the next available CMD slot. Commands include nonce for deduplication (re-sending the same nonce means the rocket processes only the first copy it hears).
 
 ---
 
 ## Relay Architecture (Phase 3)
 
-All base stations hear the rocket. Relay allows a base station that heard the rocket to share that data with others that didn't.
+All base stations try to hear the rocket. Relay allows a base station that heard the rocket to share that data with others that didn't. (EDIT: every base station is a relay, we just refer to a relay in terms of its from someone else, and treat it as second-hand information)
 
 **Relay mechanism:**  
-Each base station tracks "last heard telemetry." After a random delay of 120–300 seconds (re-randomised after each send), transmit that record in the next WIN_CMD slot.
+Each base station tracks "last heard telemetry." After a random delay of 120–300 seconds (re-randomised after each send), transmit that record in the next WIN_CMD slot. (EDIT: transmit regularly; not just after you hear one - its a continuous repeat of the last known good for those that missed it)
 
 Receiving bases: log relay packet for client serving. Do not re-relay. Do not feed into drift EMA.
 
@@ -175,9 +185,13 @@ Distinct packet type prefix. Contains:
 - Timestamp of original reception
 - Relay base station ID
 - Slot index and channel it was originally heard on
+(EDIT: the timestamp is in the relay's time, which wont necesarily match anything else. also include relays current timestamp in packet... for battery, relays might not have gps running so might not know the real time, maybe  include rekoning of current utc time? should we also include enough to let a base that heard a relay sync to the same rockets timings? dont need to send slot index, thats in the original payload. might also want to make this relay format able to hold lr and other packets; maybe top several - payload limits less of an issue for relays because they are in a known location so we dont need to push for max range modulations)
+
+(EDIT: we might end up making the base station/relay connection be via ble coded phy instead of lora - simplifies some of the handling because we only have one sx1262 which is busy, and coded phy gets 300m+ confirmed working on esp to phone. esp to esp are both class 1 so will have an extra 16db link budget so likely more than 300m)
+
 
 **Collision handling:**  
-No CSMA — we can't wait without missing the timing. Send blind. Random intervals reduce collision probability. This is eventual-delivery, not time-critical.
+No CSMA — we can't wait without missing the timing. Send blind. Random intervals reduce collision probability. This is eventual-delivery, not time-critical. (EDIT: random interval... but wait for the next win_cmd slot - thats the only time the other base stations will be listening, otherwise they are busy listening to the rocket)
 
 **Rocket ignores relay packets:**  
 Relay packets have a distinct magic byte / packet type. Rocket's command handler only acts on packets addressed to it.
@@ -190,9 +204,9 @@ Base station starts with no timing information.
 
 1. Pick a random channel from the hop sequence (any of the 23).
 2. Set telemetry modulation.
-3. Start RX with very long timeout (SX1262 supports ~262 seconds via max timer value; alternatively, loop 150ms listens without changing channel).
+3. Start RX with very long timeout (SX1262 supports ~262 seconds via max timer value; alternatively, loop 150ms listens without changing channel). (EDIT: no: its CONTINUOUS rx - not long timeout, and certainly not 150ms, that would leave so many holes to miss packets. the scan is explicitly not following the slot timings at all. slots are ignored while scanning)
 4. Wait for a telemetry packet.
-5. On receipt: read `slot_seq_index` from header. Derive expected hop channel for that slot index and confirm it matches the received channel. If consistent: lock to this timing. Feed `rxdone_time − airtime` into drift EMA as first sample.
+5. On receipt: read `slot_seq_index` from header. Derive expected hop channel for that slot index and confirm it matches the received channel. If consistent: lock to this timing. Feed `rxdone_time − airtime` into drift EMA as first sample. (EDIT: nope, you cant derive hop channel and you cant cross-check it - look at the channel you heard it on - thats the hop channel. find that in the hopping list. the slot index in the header tells you the slot index - which is completely separate sequence for which direction/which modulation will be on the next channel - e.g. where are the cmd slots relative to this telem slot - but either way you know the channel regardless of the slot index in the header)
 6. Begin normal slotted operation with lead/follow timing.
 
 **Expected acquisition time:**  
@@ -219,6 +233,8 @@ Contains:
 
 Per-device configuration (TX power, relay enable, etc.) stays in the respective `config.h`.
 
+
+
 ---
 
 ## Blocking Budget
@@ -231,6 +247,8 @@ Complies with the non-blocking rules in CLAUDE.md. Phase 1 relaxes the main loop
 - Starting TX/RX (`startTransmit()`, `startReceive()`): ≤1ms. Acceptable.
 - **Never call `*_BLOCKING` or `waitBusy` from `loop()`**, even from a non-armed path. These remain init-only in `setup()` paths.
 - Safety cutout `setStandby()` at 2-slot overrun: bounded, acceptable.
+
+(EDIT: anything with a worst-case over 1ms blocking main loop still needs to be accounted in the budget; it just no longer needs many complex state machines, and blocking is allowed if worst case total is under 10ms for all possible opeations combined, e.g. if multiple spi transxactions could happen in a single loop, their worst cases need to add to <10ms, and if total of worst cases is >1ms needs to be in budget. this is to be used for planning another unrelated controller architecure which will handle the TVC/active aero control surfaces, etc, since this controller with ble/lora has unreconcilable delays. THERE IS STILL A HARD LIMIT FOR 10MS TOTAL PER LOOP - this controller still controls pyros for parachutes, which are safety critical and must fire on time every time, based on continuous sensor readings and must turn off reliably. However, avoiding the waitbusy and *_BLOCKING methods adds substantial complexity - they are allowed if the max timeout and total is constrained and accounted - including accounting for everything that calls them, and everything that calls any of those, etc - the total of multiple if all possible in a single loop must still be under 10ms per loop )
 
 ---
 
@@ -354,3 +372,9 @@ maybe switch to radiolib
 
 
 
+
+
+
+Minimal:
+passive sync, faster slots, higher precentage telem, add slot index in reserved bits of 0xaf header
+combine radio configs into one file for rocket and base to both use
