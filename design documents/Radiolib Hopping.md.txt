@@ -279,12 +279,31 @@ e.g.bench testing [telem,cmd]
 TODO: is off and continue the same? the previous should end and turn off back to standby - or do we want to force it to off, not just continue if something went wrong and it didnt stop? should the rx time also increase? or is scanning a pure non-slotted setup?
 TODO: should base station be allowed to delay tx of command until after rx? a long telem could consistently cut off command window starting timesa - but the rocket will start listening eventually, and should be able to catch it. maybe a min turnaround time for rx to tx on base?
 TODO: can we get under 16 slots, fit in existing flags? can we squeeze some more out of what we have? should we change to a new format from 0zaf if we break compatibility to make it easier to spot outdated code? should we add the multi-record format at the same time, since we're changing the header anyway (add length byte to data page, rather than inferring it from the total length; so we can allow multiple pages - or should that just be a page type, saving 2 bytes on single page packets?)
+future maybe gps timing discipline. not for now
+low priotity for short rx windows when confirmed good recently - minor battery saving but big reliability impact. also less important now a higher percentage are planned as telem, theres less time where the rocket even could be long vs short listen windows. no need to listen during non-cmd windows on rocket. base station is either listen to the slots, or listen 100% for scanning/sync
+sync command on base station now just puts it back into scanning mode for 60 sec. if nothing found, reverts to its last best lock (if it had one). "found" means multiple parsable 0xAF packets in a row, reaching <50ms deviation in timing. remember old anchor while locking in on new anchor/drift. possible false positivesshouldnt corrupt known timings. in future possibly add params to sync command for how long to scan, and whether to scan telem or lr modulation (or maybe on findme, etc, but those are intended for a differnet kind of scan)
+sync command will also in future have the option to sync from lr packets - much less common, so much longer wait
+during scan, quickly take new timing (remember old timing), then drift calc should track how close each one is, to see if found consistently within 50ms of expected time
 
 
-commentary/notes:
+commentary/notes:-
 propagation delay is not necesarily sub microsecond. it will be sub millisecond. this is a supersonic model rocket, to 30k alt. different modulations are more tollerant to doppler
 
 
+15.3 Implicit Header Mode Timeout Behavior
+15.3.1 Description
+When receiving LoRa packets in Rx mode with Timeout active, and no header (Implicit Mode), the timer responsible for generating the
+Timeout (based on the RTC timer) is not stopped on RxDone event. Therefore, it may trigger an unexpected timeout in any subsequent mode
+where the RTC isn’t re-invoked, and therefore reset and re-programmed.
+15.3.2 Workaround
+It is advised to add the following commands after ANY Rx with Timeout active sequence, which stop the RTC and clear the timeout event, if
+any. The register at address 0x0902 is used to stop the counter, while the register at address 0x0944 clears the potential event.
+The following pseudo-code can be used as a reference to implement the fix:
+WriteRegister(0x00)@0x0920;
+value=ReadRegister@0x0944;
+value = value | 0x02;
+WriteRegister(value)@0x0944
+^^ datasheet says that, but does it mean 0902 or 0920? maybe we just setstandby, and all other things will set their own timeout anyway?
 
 
 Main: 
@@ -314,5 +333,15 @@ Actions:
 when starting tradio, record what settings actually in use - we can't calculate it from the slot - and this needs to be more than just an enum, since radio settings can be configured, leaving it thinking its on the new settings when its acually on the old
 on the rocket, simple timing - on the first loop of a new slot, if there's no incoming packet, switch to the new mode and do it. if there is, allow up to the limit.
 on the base station, slightly before a telemetry slot, a base station should listen on the telem modulation, on the upcoming hop channel.
+
+
+1 hopping
+2 reliable passive sync
+3 remove assumptions on slot timings being always longer than packet times., change to 210ms
+4 relay backhaul
+fix implicit header not clearing timeout -  bug in implicit headers not canelling the rxdone timer automatically - call 
+remove synced boolean(use timestamp of  latest recieved good ping/good telem for confidence; although for now, just always in unconfident mode. now with passive sync, knowing we're in sync just allows saving battery)
+
+
 
 
