@@ -342,6 +342,8 @@ I'd like to have most of it configurable in a single place, especially any setti
 For sync, i want the rocket to transmit telemetry packets on a regular basis, with occasional times which are allocated for the rocket to listen and the base station to send commands. I also want long-range packets, on a different modulation, with very limited payload (win_lr).
 I'm interested in trying GFSK, especially for the main telemetry, it seems to have better performance at the edge of range. I also want to be able to change the settings to tweak and find what works best.
 
+
+
 Concretely, I'm thinking to have 4 telemetry slots, then a command slot, then 4 more telem, then a long-range slot with extra length.
 i.e. telemetry should fit within the 250ms window; but commands will be at a slower modulation, and wont fit - but 99% of the time, there is no command. the base station can queue up a command and send it at the right time, and the rocket can detect that a packet has started, and keep listening, even though the time slot should have moved to the next telem packet, keep listening.
 The current approach tries to do the listening using the sx1262 built in timer cancellation - if it heads the preamble/headervalid, it will cancel the timeout, and keep running - but we need to respect that and allow it to keep going - but we need to have limits - if too many slots overrun, then we should force it back to standby and go back to normal (i think this is currently a flag, but we want 4 slots allowed) - but this approach has been a little buggy - i think some modes, (i think its from implicit headers) dont cancel the timeout, so it ends up permanently busy, etc
