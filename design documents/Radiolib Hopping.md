@@ -273,9 +273,13 @@ for now, the loop jitter before starting and the time between beginning the comm
 fix docs - it assumes telem is lora, incorrect. its gfsk. this means it needs to reset the modems between slots. we can go with lora for now, but remember when we switch to gfsk, you might need to fully reset the modem between every slot (except continue)
 remember, base station needs to start listening early, which may overlap the previous slot - depending on modulation settings and payload size, the previous might be done, or might be still running - but if the previous is still running, its ok to startlistening late. same with rocket rx, its ok to start listening late; but dont tx late.
 multiple slot sequences - 
-e.g.standard: [telem,telem,telem,cmd,telem,telem,telem,cmd,telem,lr,continue]
-e.g.power save: [telem,continue,continue,cmd,off,off,off,off,off,LR,continue,continue]
+e.g.standard: [telem,telem,telem,lr,continue,telem,telem,cmd]
+e.g.power save: [telem,off,off,LR,continue,continue,continue,cmd,continue,off,off,off,off,]
 e.g.bench testing [telem,cmd]
+e.g.long listen[telem,lr,continue,continue,cmd,cmd,cmd,cmd]
+
+try to make cmd always 4 slots after lr so unknown sequence still knows when the rocket will listen. (or if we ever allow variable/configurable at runtime for the slot timing for the same thing but slower, then make command listen windows always a specific time after lr)
+
 TODO: is off and continue the same? the previous should end and turn off back to standby - or do we want to force it to off, not just continue if something went wrong and it didnt stop? should the rx time also increase? or is scanning a pure non-slotted setup?
 TODO: should base station be allowed to delay tx of command until after rx? a long telem could consistently cut off command window starting timesa - but the rocket will start listening eventually, and should be able to catch it. maybe a min turnaround time for rx to tx on base?
 TODO: can we get under 16 slots, fit in existing flags? can we squeeze some more out of what we have? should we change to a new format from 0zaf if we break compatibility to make it easier to spot outdated code? should we add the multi-record format at the same time, since we're changing the header anyway (add length byte to data page, rather than inferring it from the total length; so we can allow multiple pages - or should that just be a page type, saving 2 bytes on single page packets?)
@@ -284,7 +288,8 @@ low priotity for short rx windows when confirmed good recently - minor battery s
 sync command on base station now just puts it back into scanning mode for 60 sec. if nothing found, reverts to its last best lock (if it had one). "found" means multiple parsable 0xAF packets in a row, reaching <50ms deviation in timing. remember old anchor while locking in on new anchor/drift. possible false positivesshouldnt corrupt known timings. in future possibly add params to sync command for how long to scan, and whether to scan telem or lr modulation (or maybe on findme, etc, but those are intended for a differnet kind of scan)
 sync command will also in future have the option to sync from lr packets - much less common, so much longer wait
 during scan, quickly take new timing (remember old timing), then drift calc should track how close each one is, to see if found consistently within 50ms of expected time
-
+TODO: should we add  a WhereAreYou command? - rocket queues an immediate packet on the specified channel out of normal timing, then returns to normal hopping - base station can use this known response to hear it and know what sync pattern to follow. message includes hopping data page, with timestamp of when in the slot timing this was sent, and what the current slot number is. base calculates when this was sent, and should be able to get ahead of the rocket, continuous listen there, and fall into sync. the cmdack page stays queued for nomal hopping, the hop reply page is in the special out-of-time out-of-sequence. this interupts any in-progress radio action (i.e. setstandby, set to specified channel, tx - these can be in the main loop, by flags that override the normal logic; command handler just sets those flags) - main issue is the rocket spends such a small percentage of time listening. maybe 
+for passive sync from lr packets -= these dont have hopping info - they are a different modulation to normal for airtime calc, and they cant be properly verified (any random3 bytes on sf12 is accepted, which might not be from us) but assuming the lr packet is from us, they do imply timing and channel. base station can then get ahead of the sequence and listen ahead, following telem, etc, and guessing where command slot is. we might be out of range to get consistent telem, but it gives a way to probably be on the right channel at the right time to try to get in normal sync, and also to align when cmd windows might beto send a whereareyou command
 
 commentary/notes:-
 propagation delay is not necesarily sub microsecond. it will be sub millisecond. this is a supersonic model rocket, to 30k alt. different modulations are more tollerant to doppler
@@ -323,6 +328,7 @@ i.e. telemetry should fit within the 250ms window; but commands will be at a slo
 The current approach tries to do the listening using the sx1262 built in timer cancellation - if it heads the preamble/headervalid, it will cancel the timeout, and keep running - but we need to respect that and allow it to keep going - but we need to have limits - if too many slots overrun, then we should force it back to standby and go back to normal (i think this is currently a flag, but we want 4 slots allowed) - but this approach has been a little buggy - i think some modes, (i think its from implicit headers) dont cancel the timeout, so it ends up permanently busy, etc
 Commands will typically overun the slot. telem will usually fit within the slot.
 Long-range packets will typically overrun one or more slots. (the slot type after lr is meaningless because it always overruns)
+if we've not heard telem for 2 minutes, it can go into continuous listen mode on a random channel for 1 second, then return to normal, unless it finds something with valid 0xaf packets
 
 
 I'd like to explicitly have in scope, for phase 2, the relay functionality. base stations randomly resend their last known good telemetry, for other bases to hear.
@@ -335,12 +341,15 @@ on the rocket, simple timing - on the first loop of a new slot, if there's no in
 on the base station, slightly before a telemetry slot, a base station should listen on the telem modulation, on the upcoming hop channel.
 
 
-1 hopping
-2 reliable passive sync
-3 remove assumptions on slot timings being always longer than packet times., change to 210ms
+
+Priorities:
+1 reliable passive sync (continuous listen on base station startup)
+2 hopping (23 channels)
+3 remove assumptions on slot timings being always longer than packet times., change to 210ms, with all slots able to continue if in progress, and with dedicated win_continue after the lr slots (packets longer than a slot)
 4 relay backhaul
 fix implicit header not clearing timeout -  bug in implicit headers not canelling the rxdone timer automatically - call 
 remove synced boolean(use timestamp of  latest recieved good ping/good telem for confidence; although for now, just always in unconfident mode. now with passive sync, knowing we're in sync just allows saving battery)
+maybe switch to radiolib
 
 
 
