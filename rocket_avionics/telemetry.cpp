@@ -12,7 +12,7 @@
 #include "globals.h"
 
 // ===================== LOG PAGE CONFIG =====================
-//back reference index
+//back reference index - TODO: this was originally just to map 0,1,2,3 to 1,2,3,4.. but now we have a zero, does this even do anything?
 static const uint8_t LOG_PAGE_TYPE[] = {
   PKT_TELEMETRY, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F
 };
@@ -32,7 +32,7 @@ LogPageConfig logPages[LOGI_COUNT] = {
   { 1000000, 0, 0 },  // Flight status
   {10000000, 0, 0 },  // Radio health
   {10000000, 0, 0 },  // Timestamp
-  { 0,       0, 0 },  // Thrust curve: intervalUs=0, never written to flash
+  { 0,       0, 0 },  // Thrust curve: intervalUs=0, never written to flash on automatic cycle, only when triggered - TODO: fix all the other places falsely claiming its never logged, and fix that bug where its not logged on coast. that was incorrect, it should log on coast, just not regularly on timer
   { 1000000, 0, 0 },  // Pyro status
 };
 
@@ -506,7 +506,7 @@ void logPage(LogPageIdx idx) {
   }
   uint8_t buf[32];
   size_t pos = 0;
-  uint8_t pageType = LOG_PAGE_TYPE[idx];
+  uint8_t pageType = LOG_PAGE_TYPE[idx]; v//TODO: is this map needed now we do have a zero, this could just be = idx, right?
   dispatchBuildPage(pageType, buf, &pos);
   if (pos > 0) logDataPage(pageType, buf, (uint8_t)pos);
 }
@@ -547,9 +547,15 @@ void nonblockingLogging() {
 
   unsigned long now = micros();
   for (int i = 0; i < LOGI_COUNT; i++) {
-    if (logPages[i].intervalUs == 0) continue;
-    if ((now - logPages[i].lastLogUs) < logPages[i].intervalUs) continue;
+    if (i==LOGI_THRUST_CURVE && thrustLogForce){
+      thrustLogForce=false;
+    } else {
+      if (logPages[i].intervalUs == 0) continue;
+      if ((now - logPages[i].lastLogUs) < logPages[i].intervalUs) continue;
+//TODO: we shouldnt' log non-fresh, but 2 issues - 1: theres bugs not everything is marked fresh; and 2: we do want at least some low rate non-fresh repeated, to guarentee max age - TODO: define maxage vs regular interval separately with different periods
+    }
     logPages[i].lastLogUs = now;
+    logPages[i].freshMask &= ~FRESH_LOG;
     logPage((LogPageIdx)i);
   }
 }

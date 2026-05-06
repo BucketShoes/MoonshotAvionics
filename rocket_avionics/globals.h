@@ -68,8 +68,9 @@ extern unsigned long runningMaxLoopUs;  // all-time worst loop iteration (reset 
 extern int16_t   thrustBuf[THRUST_BUF_SIZE];  // native accel.x milli-g samples
 extern uint16_t  thrustBufHead;               // next-write index (wraps at THRUST_BUF_SIZE)
 extern bool      thrustBufActive;             // ring is currently writing samples
-extern bool      thrustLoraForce;             // force page 0x0E on next LoRa WIN_TELEM slot (freezes ring)
+extern bool      thrustLoraForce;             // force page 0x0E on next LoRa WIN_TELEM slot (freezes ring - lora is assumed to be the slowest of all forced transports, so it unfreezes once sent to lora)
 extern bool      thrustBleForce;              // force page 0x0E to BLE once (coast entry)
+extern bool      thrustLogForce;              // force page 0x0E to logs once (coast entry)
 
 // ===================== BLE SHARED STATE =====================
 // Mirrors of BLE state needed by telemetry.cpp and flight.cpp without a circular ble.h include.

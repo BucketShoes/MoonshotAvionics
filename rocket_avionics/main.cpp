@@ -75,6 +75,8 @@ uint16_t thrustBufHead   = 0;
 bool     thrustBufActive = false;
 bool     thrustLoraForce = false;
 bool     thrustBleForce  = false;
+bool     thrustLogForce  = false;
+
 
 // ===================== BLE SHARED STATE =====================
 // Mirrors of ble.cpp state needed by telemetry.cpp / flight.cpp.

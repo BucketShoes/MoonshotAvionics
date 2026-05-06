@@ -46,7 +46,7 @@ enum LogPageIdx {
   LOGI_FLIGHT_STATUS, // 0x0B
   LOGI_RADIO_HEALTH,  // 0x0C
   LOGI_TIMESTAMP,     // 0x0D
-  LOGI_THRUST_CURVE,  // 0x0E (intervalUs=0: never written to flash; BLE capture + LoRa forced send only)
+  LOGI_THRUST_CURVE,  // 0x0E (intervalUs=0: never written to flash; BLE capture + LoRa forced send only) - TODO: this should be logged to flash, just not logged on a timer, only on trigger
   LOGI_PYRO_STATUS,   // 0x0F
   LOGI_COUNT
 };

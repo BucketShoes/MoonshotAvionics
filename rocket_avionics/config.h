@@ -153,7 +153,7 @@ struct SlotConfig {
 #define NVS_NAMESPACE   "rocket"
 
 // ===================== PACKET TYPE CONSTANTS =====================
-
+//(these are in the same namespace as data page types, packets>128, pages <128)
 #define PKT_TELEMETRY  0xAF
 #define PKT_COMMAND    0x9A
 #define PKT_BACKHAUL   0xE2

@@ -254,6 +254,7 @@ static void enterPhase(FlightPhase newPhase, unsigned long nowUs) {
     flightState.thrustViaBoost     = (oldPhase == PHASE_BOOST);
     thrustLoraForce = true;
     thrustBleForce  = true;
+    thrustLogForce = true;
     thrustBufActive = false;  // freeze ring until LoRa send clears thrustLoraForce
     Serial.println("FLIGHT: coast — thrust curve frozen for forced send");
   }
