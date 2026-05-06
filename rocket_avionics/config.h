@@ -161,7 +161,8 @@ struct SlotConfig {
 #define PKT_LONGRANGE  0xBB
 
 // ===================== DATA PAGE TYPE CONSTANTS =====================
-
+//(other pages didnt get constants. TODO: add constants for other pages)
+//TODO: this isnt a config, it's a magic number. doesnt belong in config.h
 #define PAGE_THRUST_CURVE      0x0E   // X-axis accel ring buffer (variable length, not logged to flash)
 #define PAGE_PYRO_STATUS       0x0F   // Pyro channel state, continuity, HV sense (6 bytes)
 

@@ -195,7 +195,7 @@ No CSMA — we can't wait without missing the timing. Send blind. Random interva
 
 **Rocket ignores relay packets:**  
 Relay packets have a distinct magic byte / packet type. Rocket's command handler only acts on packets addressed to it.
-
+(EDIT: also, usually on the wrong modulation, so it wouldnt hear it anyway.. this isnt for the rocket, its just spare time when the rocket isnt allowed to talk, so therefore the base station radios arent otherwise busy listening to the rocket, so is a good time to send backhaul)
 ---
 
 ## Cold Start Acquisition
@@ -204,9 +204,9 @@ Base station starts with no timing information.
 
 1. Pick a random channel from the hop sequence (any of the 23).
 2. Set telemetry modulation.
-3. Start RX with very long timeout (SX1262 supports ~262 seconds via max timer value; alternatively, loop 150ms listens without changing channel). (EDIT: no: its CONTINUOUS rx - not long timeout, and certainly not 150ms, that would leave so many holes to miss packets. the scan is explicitly not following the slot timings at all. slots are ignored while scanning)
+3. Start RX with very long timeout (SX1262 supports ~262 seconds via max timer value; alternatively, loop 150ms listens without changing channel). (EDIT: no: its CONTINUOUS rx - not long timeout, and certainly not 150ms, that would leave so many holes to miss packets. the scan is explicitly NOT following the slot timings at all. slots are ignored while scanning)
 4. Wait for a telemetry packet.
-5. On receipt: read `slot_seq_index` from header. Derive expected hop channel for that slot index and confirm it matches the received channel. If consistent: lock to this timing. Feed `rxdone_time − airtime` into drift EMA as first sample. (EDIT: nope, you cant derive hop channel and you cant cross-check it - look at the channel you heard it on - thats the hop channel. find that in the hopping list. the slot index in the header tells you the slot index - which is completely separate sequence for which direction/which modulation will be on the next channel - e.g. where are the cmd slots relative to this telem slot - but either way you know the channel regardless of the slot index in the header)
+5. On receipt: read `slot_seq_index` from header. Derive expected hop channel for that slot index and confirm it matches the received channel. If consistent: lock to this timing. Feed `rxdone_time − airtime` into drift EMA as first sample. (EDIT: nope, you cant derive hop channel and you cant cross-check it - look at the channel you heard it on - thats the hop channel. find that in the hopping list thats your hop index. the slot index in the header tells you the slot index - which is completely separate sequence for which direction/which modulation will be on the next channel - e.g. where are the cmd slots relative to this telem slot - but either way you know the channel regardless of the slot index in the header. also, the first one, just sets it direectly. only all future ones follow drift. bear in mind this same mechanism can also be used when we're not sure if we've lost it or not, so the scan logic needs to return a new setup, not jkust override the settings directly - so it can be used on startup, set settings, and on command scan for a while, then return to old settings - which needs to also be able to include if we heard one packet, but nothing else matched. we dont have 100% certainty that a telem packet is real like we do with hmac'd commands, it could have the right magic nuymbers by chance, and we dont want to throw away sync just because we heard junk - thats why the drift ema is so slow)
 6. Begin normal slotted operation with lead/follow timing.
 
 **Expected acquisition time:**  
@@ -225,13 +225,13 @@ Contains:
 - All timing constants
 - Hop sequence array and `NUM_CHANNELS`
 - Slot sequence array and `SLOT_SEQUENCE_LEN`
-- Channel frequency table (AU915 upper band)
-- Modulation parameter structs for TELEM, CMD, LR
-- Magic bytes / packet type identifiers
+- Channel frequency table (AU915 upper band) (EDIT: no table, just a formula, pre-existing code)
+- Modulation parameter structs for TELEM, CMD, LR (EDIT: not sure these make sense as defines - these are configurable at runtime. makes sense for some ofthe params, or maybe the defaults as defines/const)
+- Magic bytes / packet type identifiers (EDIT: magic numbers arent configurable, they are not subject to change, put those somewhere else like constants or something - it does also make sense that be shared)
 - Relay timing bounds
 - Any other constant shared between firmwares
 
-Per-device configuration (TX power, relay enable, etc.) stays in the respective `config.h`.
+Per-device configuration (current TX power, relay enable, etc.) stays in the respective `config.h`. (EDIT: these are runtime editable examples. thefixed  defines for radio still make sense shared in one file even if only one side uses them, e.g. which kinds of debug logging is enabled, has bs and rocket specific flags))
 
 
 
@@ -241,12 +241,12 @@ Per-device configuration (TX power, relay enable, etc.) stays in the respective 
 
 Complies with the non-blocking rules in CLAUDE.md. Phase 1 relaxes the main loop limit to 10ms worst case; radio operations should consume ≤1ms of that.
 
-- SPI transactions (RadioLib calls): ≤1ms typical, ≤3ms worst case. Acceptable.
+- SPI transactions (RadioLib calls): ≤1ms typical, ≤3ms worst case. Acceptable. (EDIT: Claude has a habit of declaring unacceptable things as fine or acceptable specifically when they arent. any statement of this form where it ends with saying it is acceptable or ok or fine should be dealt with extreme skepticism. 3ms is not ok, it needs to be reviewed and should definitely be avoided. its just no longer automatically kicked out and immediate cause to remove the entire feature. anything which could contribute along with other things to add to more than 10ms is absolutely not ok)
 - IRQ flag reads (`getIrqFlags()`): ~10µs. Always acceptable.
-- `setStandby()`: ≤500µs. Acceptable.
-- Starting TX/RX (`startTransmit()`, `startReceive()`): ≤1ms. Acceptable.
+- `setStandby()`: ≤500µs. Acceptable. (EDIT: if reported in budget)
+- Starting TX/RX (`startTransmit()`, `startReceive()`): ≤1ms. Acceptable. (EDIT: this is borderline and not acceptable)
 - **Never call `*_BLOCKING` or `waitBusy` from `loop()`**, even from a non-armed path. These remain init-only in `setup()` paths.
-- Safety cutout `setStandby()` at 2-slot overrun: bounded, acceptable.
+- Safety cutout `setStandby()` at 2-slot overrun: bounded, acceptable. (EDIT: this is not a flight safety or injury risk, threshold like the other safety mechanisms above. this just risks the rocket never being found. its an entirely different meaning of the word safety. BLOCKING THE MAIN LOOP MORE THAN 10 MS COULD CAUSE HUMAN INJURY. failing to reset a radio is just lost property or minor inconvenience)
 
 (EDIT: anything with a worst-case over 1ms blocking main loop still needs to be accounted in the budget; it just no longer needs many complex state machines, and blocking is allowed if worst case total is under 10ms for all possible opeations combined, e.g. if multiple spi transxactions could happen in a single loop, their worst cases need to add to <10ms, and if total of worst cases is >1ms needs to be in budget. this is to be used for planning another unrelated controller architecure which will handle the TVC/active aero control surfaces, etc, since this controller with ble/lora has unreconcilable delays. THERE IS STILL A HARD LIMIT FOR 10MS TOTAL PER LOOP - this controller still controls pyros for parachutes, which are safety critical and must fire on time every time, based on continuous sensor readings and must turn off reliably. However, avoiding the waitbusy and *_BLOCKING methods adds substantial complexity - they are allowed if the max timeout and total is constrained and accounted - including accounting for everything that calls them, and everything that calls any of those, etc - the total of multiple if all possible in a single loop must still be under 10ms per loop )
 
@@ -255,23 +255,24 @@ Complies with the non-blocking rules in CLAUDE.md. Phase 1 relaxes the main loop
 ## Implementation Phases
 
 ### Phase 1 — RadioLib port, shared config, command queue
-Port rocket and base station radio to RadioLib. Introduce `radio_config.h`. Replace boolean command flag with queue. Retain existing single fixed modulation, no hopping. Validate bench timing and IRQ handling via `PreambleDetected`/`HeaderValid`. Reduce code duplication between rocket and base station.
+Port rocket and base station radio to RadioLib. Introduce `radio_config.h`. Replace boolean command flag with queue. Retain existing single fixed modulation, no hopping. Validate bench timing and IRQ handling via `PreambleDetected`/`HeaderValid`. Reduce code duplication between rocket and base station. (EDIT: true fifo queue is much lower priority.)
+
 
 ### Phase 2 — Hopping, passive sync, multiple modulations
-Add hop function. All rocket TX hops. Add `slot_seq_index` byte to 0xAF header. Add WIN_LR + WIN_CONTINUE to slot sequence. Add cold-start acquisition on base station. Add drift EMA on base station. Establish fixed command channel. Define LR modulation parameters.
+Add hop function. All rocket TX hops. Add `slot_seq_index` byte to 0xAF header. Add WIN_LR + WIN_CONTINUE to slot sequence. Add cold-start acquisition on base station. Add drift EMA on base station. Establish fixed command channel. Define LR modulation parameters. (EDIT: win_lr is already implemented. existing implemented drift ema is built, but tracks incorrectly, buggy, needs rewrite, 0xaf might not need a whole byte, if under 16 telem slots in the cycle, the existing reserved bits are enough - we only need to track which telem slot it is, because if this packet was sent, it was sent in a telem slot, which gives us more total slots in 4 bits)
 
 ### Phase 3 — Relays, HMAC, power saving
-Relay packet format and base station relay TX/RX. Replace per-packet CRC with HMAC-32 (commands already have full HMAC + nonce). Sleep/low-power cycle variants (alternate slot sequences with WIN_OFF). "Quiet" command for post-landing battery saving.
+Relay packet format and base station relay TX/RX. Replace per-packet CRC with HMAC-32 (commands already have full HMAC + nonce). Sleep/low-power cycle variants (alternate slot sequences with WIN_OFF). "Quiet" command for post-landing battery saving. (EDIT: power saving for post landing or prelaunch will probably be done by changing slot sequence; or maybe by suppressing a fraction of telems - rx uses some power, but tx uses much more. also tx with lower power can save power. possible option for pings to keep rocket in low tx power and skipping most windows.)
 
 ### Phase 4 — Multiple rockets, FCC band, GPS timing option
-Slot-phase offset per rocket. Extend to 50 channels for FCC (same hop function, longer period). GPS-disciplined timing as optional enhancement (does not replace drift following; adds a bit flag "I have GPS time" to header; receivers use it as a hint only).
+Slot-phase offset per rocket. Extend to 50 channels for FCC (same hop function, longer period). GPS-disciplined timing as optional enhancement (does not replace drift following; adds a bit flag "I have GPS time" to header; receivers use it as a hint only). (EDIT: no, 53 channels, gotta be prime. fcc requires at least 50 so 53 prime; but au only requires 20, so 23 prime - GPS time discipline can be used for better sleep, and better tracking when lost due to range, still in sync when we get closer again - although bases dont normally run gps, so teven if the rocket is perfect, the bases drift, too - drift calc is the mutual offset between both rocket and base station drift. after landing, rockets might turn off gps for power saving, although reacquire intermittently to hold perfect long term)
 
 ---
 
 ## Open Questions
 
-- **GFSK vs LoRa for telemetry.** Narrowband GFSK may outperform wideband LoRa at range. Needs bench testing with SX1262 at various BW settings. Architecture supports swapping without structural change.
-- **LR packet payload.** 3-byte packed GPS format not yet defined.
+- **GFSK vs LoRa for telemetry.** Narrowband GFSK may outperform wideband LoRa at range. Needs bench testing with SX1262 at various BW settings. Architecture supports swapping without structural change. (EDIT: not bench testing, field testing. My bench isn't multiple km long. also, a real launch is the only way to test airborne vs near-obstruction/fresnel)
+- **LR packet payload.** 3-byte packed GPS format not yet defined. (EDIT: yes, format defined and pre-existing and implemented, working)
 - **Multi-page GFSK telem.** If wideband GFSK fits multiple pages per slot, the one-page-per-slot assumption needs revisiting. Defer to Phase 2 evaluation.
 - **WIN_CONTINUE and overrun counter.** WIN_CONTINUE slots do not increment the overrun counter; only unexpected overruns do. Confirm the safety cutout does not count WIN_CONTINUE as an overrun.
 - **`Hopping radio slot structure.md`** — superseded by this document. Can be deleted or archived.
