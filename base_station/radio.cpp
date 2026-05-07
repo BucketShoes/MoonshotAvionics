@@ -587,14 +587,6 @@ static void bsRadioHandleIrq() {
   }
 }
 
-// ===================== PING PACKET BUILDER =====================
-
-size_t bsBuildPingCmdPacket(uint8_t* buf) {
-  // Implemented in main.cpp where nonce and HMAC key are available.
-  extern size_t bsBuildPingCmdPacketImpl(uint8_t* buf);
-  return bsBuildPingCmdPacketImpl(buf);
-}
-
 // ===================== MAIN RADIO UPDATE =====================
 
 #ifdef BS_RADIO_TEST_MODE
