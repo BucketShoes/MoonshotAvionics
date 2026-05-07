@@ -458,11 +458,25 @@ static void bsHandleRxDone(uint64_t eventUs) {
     uint64_t rxStartUs = (uint64_t)eventUs - (uint64_t)airtimeUs;
 
     if (bsScanState == SCAN_SEARCHING) {
-      // Compute candidate anchor: anchor such that slot packetSlotSeqIdx starts at rxStartUs.
-      // bsSyncSeedSlotIndex=0 means anchor is the start of slot 0 in the sequence.
-      // We want: anchor + packetSlotSeqIdx * SLOT_DURATION_US = rxStartUs
-      // So: anchor = rxStartUs - packetSlotSeqIdx * SLOT_DURATION_US
-      bsCandidateAnchorUs       = (unsigned long)(rxStartUs - (uint64_t)packetSlotSeqIdx * SLOT_DURATION_US);
+      // We were listening on hopSeq[2], so the packet was sent in a slot where
+      // (rocketSlotIndex % NUM_HOP_CHANNELS) == 2. The wire field gives us
+      // (rocketSlotIndex % SLOT_SEQUENCE_LEN). CRT recovers rocketSlotIndex
+      // mod LCM(SLOT_SEQUENCE_LEN, NUM_HOP_CHANNELS).
+      // Search 0 .. LCM-1 for the unique value matching both constraints.
+      uint32_t fullSlotIndex = 0;
+      bool found = false;
+      uint32_t lcm = (uint32_t)SLOT_SEQUENCE_LEN * (uint32_t)NUM_HOP_CHANNELS;  // assumes coprime
+      for (uint32_t x = packetSlotSeqIdx; x < lcm; x += SLOT_SEQUENCE_LEN) {
+        if ((x % NUM_HOP_CHANNELS) == 2) { fullSlotIndex = x; found = true; break; }
+      }
+      if (!found) {
+        Serial.println("BS SCAN: CRT failed — bad seqIdx?");
+        return;
+      }
+
+      // Anchor s.t. bsGetSlotIndex() == rocketSlotIndex at any time.
+      // bsSyncSeedSlotIndex = 0; anchor = rxStartUs - fullSlotIndex * SLOT_DURATION_US.
+      bsCandidateAnchorUs       = (unsigned long)(rxStartUs - (uint64_t)fullSlotIndex * SLOT_DURATION_US);
       bsCandidateSeedSlotIndex  = 0;
       bsCandidateDriftEmaUs     = 0.0f;
 
