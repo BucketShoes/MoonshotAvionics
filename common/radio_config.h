@@ -97,6 +97,9 @@ extern uint8_t hopSeq[NUM_HOP_CHANNELS];
 #define BS_RX_TIMEOUT_US         (SLOT_DURATION_US - 20'000UL)
 #define BS_OVERRUN_MAX           3
 
+// Skip a TX slot if we've fallen this many µs behind the intended start.
+#define TX_LATE_THRESHOLD_US     10'000UL
+
 // Rocket telem RX timeout choices (synced vs lost-rocket fallback).
 #define ROCKET_RX_TIMEOUT_US      100'000UL
 #define ROCKET_LONG_RX_TIMEOUT_US 750'000UL

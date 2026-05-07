@@ -569,18 +569,34 @@ void nonblockingRadio() {
   // Not yet time for the next action — int64 signed subtraction.
   if (now < nextActionUs) return;
 
+  // Radio still mid-action (TX or RX in flight from a previous slot — LR TX spans
+  // ~2 slots). Don't try to start a new action; we'll re-enter once DIO1 fires
+  // and IRQ moves us back to STANDBY. Advance nextActionUs so we don't spin.
+  if (radioState != RADIO_STANDBY) {
+    static int64_t lastBusyStateLogUs = 0;
+    if ((now - lastBusyStateLogUs) > 1'000'000) {
+      Serial.print("RADIO: skip slot="); Serial.print((long long)slotIndex);
+      Serial.print(" win="); Serial.print(windowModeName(win));
+      Serial.print(" rstate="); Serial.println((int)radioState);
+      lastBusyStateLogUs = now;
+    }
+    nextActionSlotIndex = slotIndex + 1;
+    nextActionUs        = slotEndUsFor(slotIndex);
+    return;
+  }
+
   // Time has come (or overdue). Check overrun conditions before BUSY.
   bool isOverrun = false;
 
   if (win == WIN_TELEM || win == WIN_LR) {
-    // TX: skip if more than 10ms late.
-    if ((now - nextActionUs) > 10'000) {
+    // TX: skip if too far behind the intended start.
+    if ((now - nextActionUs) > (int64_t)TX_LATE_THRESHOLD_US) {
       isOverrun = true;
       delayedTxCount++;
     }
   } else if (win == WIN_CMD) {
-    // RX: skip if remaining time in slot < 60ms.
-    if ((slotEndUsFor(slotIndex) - now) < 60'000) {
+    // RX: skip if remaining time in slot is too short.
+    if ((slotEndUsFor(slotIndex) - now) < (int64_t)BS_RX_MIN_REMAINING_US) {
       isOverrun = true;
     }
   }
@@ -645,7 +661,7 @@ void nonblockingRadio() {
       applyFrequency(ch);
       sx126x_mod_params_lora_t mp = buildModParams(CFG_NORMAL);
       int64_t remainUs = slotEndUsFor(slotIndex) - now;
-      if (remainUs < 60'000) return;
+      if (remainUs < (int64_t)BS_RX_MIN_REMAINING_US) return;
       sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL,255);
       radioStartRxTimeout((uint32_t)(remainUs / 15.625f), mp, pp, false);
     }
@@ -670,7 +686,7 @@ void nonblockingRadio() {
                                          : (int64_t)ROCKET_LONG_RX_TIMEOUT_US;
     int64_t remainUs = slotEndUsFor(slotIndex) - now;
     if (remainUs > timeoutUs) remainUs = timeoutUs;
-    if (remainUs < 60'000) return;
+    if (remainUs < (int64_t)BS_RX_MIN_REMAINING_US) return;
 
     sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL,255);
     radioStartRxTimeout((uint32_t)(remainUs / 15.625f), mp, pp, false);

@@ -754,6 +754,20 @@ void bsHandleRadio() {
   // Not yet time to start this slot's action.
   if (now < actionStartUs) return;
 
+  // Radio still mid-action from a previous slot (typical: telem RX that hasn't
+  // timed out yet). Don't start a new action — wait for DIO1 / IRQ to clear.
+  if (bsRadioState != BS_RADIO_STANDBY) {
+    static int64_t lastBusyStateLogUs = 0;
+    if ((now - lastBusyStateLogUs) > 1'000'000) {
+      Serial.print("BS RADIO: skip slot="); Serial.print((long long)slotIndex);
+      Serial.print(" win="); Serial.print(windowModeName(win));
+      Serial.print(" rstate="); Serial.println((int)bsRadioState);
+      lastBusyStateLogUs = now;
+    }
+    bsLastActionStartedSlot = slotIndex;
+    return;
+  }
+
   // How much time remains before the next action must begin? That's our timeout.
   int64_t remainUs = nextActionStartUs - now;
   if (remainUs < (int64_t)BS_RX_MIN_REMAINING_US) {
