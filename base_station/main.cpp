@@ -350,8 +350,8 @@ void pushToAllTransports(const uint8_t* wsBuf, size_t wsLen) {
 // Invoked from radio.cpp bsHandleRxDone() for every valid received packet.
 
 void bsOnPacketReceived(const uint8_t* buf, size_t len, float snrF, float rssiF,
-                        int32_t signedPosInSlot, uint32_t slotNum, uint8_t seqIdx,
-                        uint8_t win, uint32_t timeOnAirMs, float driftEmaUs, uint32_t timeSinceSyncMs) {
+                        uint32_t slotIndex, uint8_t seqIdx, uint8_t win,
+                        uint32_t timeOnAirMs, float driftEmaUs) {
   int8_t snr4 = (int8_t)(snrF * 4);
   uint32_t nowMs = millis();
 
@@ -381,17 +381,15 @@ void bsOnPacketReceived(const uint8_t* buf, size_t len, float snrF, float rssiF,
   memcpy(wsBuf + 8, &recNum, 4);
   memcpy(wsBuf + 12, buf, len);
   pushToAllTransports(wsBuf, 12 + len);
-// Consolidated RX logging: signal + record num + slot timing + airtime + drift + packet size + hex dump
-  //Slot:500=5(0)@1.234ms+2ms drift:7266us->ema Sync+123s 17B [AF230391098910831...]
-  Serial.printf("BS OnPackRx: Sig:%.1f/%.0f #%d Slot:%lu=%u(%u)@%.2fms+%lums drift:%.1fms ema:%.1fms tss:%.1fs %dB: [",
-                snrF, rssiF, recNum, slotNum,seqIdx,win, (signedPosInSlot/1000.0f-timeOnAirMs),timeOnAirMs, bsAnchorDriftUs/1000.0f, driftEmaUs/1000.0f, timeSinceSyncMs/1000.0f, len);
-  // Serial.printf("BS OnPackRx: Sig:%.1f/%.0f #%d slot:%.3fms/%lu/%u/%u toa:%lums drift:%ldus ema:%.0f tss:%lums %dB: [",
-  //               snrF, rssiF, recNum, signedPosInSlot/1000.0f, slotNum, seqIdx, win, timeOnAirMs, bsAnchorDriftUs, driftEmaUs, timeSinceSyncMs, len);
+
+  Serial.printf("BS OnPackRx: Sig:%.1f/%.0f #%d slot:%lu seq:%u win:%u toa:%lums drift:%.1fms %dB: [",
+                snrF, rssiF, recNum, (unsigned long)slotIndex, seqIdx, win, (unsigned long)timeOnAirMs,
+                driftEmaUs / 1000.0f, (int)len);
   size_t hexLen = (len < 14) ? len : 14;
   for (size_t i = 0; i < hexLen; i++) {
     Serial.printf("%02X", buf[i]);
   }
-  if (hexLen<len) Serial.print("...");
+  if (hexLen < len) Serial.print("...");
   Serial.println("]");
 }
 
@@ -478,21 +476,7 @@ static void dispatchCmdTx() {
   Serial.print("/"); Serial.print(cmdTx.sends);
   Serial.print(" len="); Serial.println(cmdTx.pktLen);
 
-  // Detect CMD_SET_SYNC by byte inspection, not by source (internal vs browser-forwarded).
-  // Both paths load cmdTx with the same 17-byte packet where pkt[2] = CMD_SET_SYNC (0x41).
-  // This ensures the base re-anchors on TxDone for ANY sync TX — internally queued
-  // (bsHandleSyncSend) or forwarded from the UI via queueCommandTx(). DO NOT narrow this check.
-  bool isSyncPkt = (cmdTx.pktLen == 17 && cmdTx.pkt[2] == 0x41);
-  if (isSyncPkt) bsSyncTxInFlight = true;
-
-  // Commands are always sent on NORMAL config (not LR). Ensure target is set before TX.
-  extern RadioSlotConfig bsTargetCfg;
-  extern void bsApplyCfgIfNeeded();
-  bsTargetCfg = RADIO_CFG_NORMAL;
-  bsApplyCfgIfNeeded();
-
   if (!bsRadioStartTx(cmdTx.pkt, cmdTx.pktLen)) {
-    bsSyncTxInFlight = false;
     Serial.println("CMD TX start fail — will retry next WIN_CMD slot");
     // Leave cmdTx.active true — packet stays queued and retries next slot.
     return;
@@ -1016,48 +1000,7 @@ void loop() {
   if (bsLoraReady) {
     bsHandleRadio();
 
-    // Auto-sync: bsHandleSyncSend sets bsSyncNeedsQueue while never-synced (tight walk-retries
-    // then slow backoff). After TxDone, bsSynced=true and no further automatic sync is queued.
-    // Ping is queued separately on a 60s cadence.
-    bsHandleSyncSend();
-
-    // Build and load sync packet when flagged. Only load if no TX already queued.
-    // Internally generated sync always fires immediately (waitMs=0) because by definition
-    // the rocket's slot timing isn't knowable yet — we want the send to land as soon as the
-    // radio is standby, and subsequent walk-retries will land at different phases of the
-    // rocket's slot cycle. User-initiated sync via queueCommandTx() uses caller-supplied waitMs.
-    if (bsSyncNeedsQueue && !cmdTx.active) {
-      bsSyncNeedsQueue = false;
-      uint8_t syncPkt[17];
-      size_t syncLen = bsBuildSyncCmdPacket(syncPkt);
-      memcpy(cmdTx.pkt, syncPkt, syncLen);
-      cmdTx.pktLen   = (uint8_t)syncLen;
-      cmdTx.sends    = 1;
-      cmdTx.sent     = 0;
-      cmdTx.waitMs   = 0;
-      cmdTx.queuedMs = millis();
-      cmdTx.active   = true;
-      Serial.print("SYNC loaded nonce="); Serial.println(highestNonce);
-    }
-
-    // Build and load ping packet when flagged. Only load if no TX already queued.
-    // Ping waits up to 4s for the next WIN_CMD slot so it lands on the rocket's listen window.
-    // If the wait expires (shouldn't normally happen — WIN_CMD comes every ~840ms), send out-of-slot.
-    if (bsPingNeedsQueue && !cmdTx.active) {
-      bsPingNeedsQueue = false;
-      uint8_t pingPkt[17];
-      size_t pingLen = bsBuildPingCmdPacket(pingPkt);
-      memcpy(cmdTx.pkt, pingPkt, pingLen);
-      cmdTx.pktLen   = (uint8_t)pingLen;
-      cmdTx.sends    = 1;
-      cmdTx.sent     = 0;
-      cmdTx.waitMs   = 4000;
-      cmdTx.queuedMs = millis();
-      cmdTx.active   = true;
-      Serial.print("PING loaded nonce="); Serial.println(highestNonce);
-    }
-
-    // Dispatch: slot machine signals WIN_CMD (synced path)
+    // Dispatch: slot machine signals WIN_CMD
     if (bsWinCmdReady) {
       bsWinCmdReady = false;
       dispatchCmdTx();

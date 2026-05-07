@@ -109,6 +109,9 @@ static uint16_t buildStateFlags() {
   if (flightBaroOk())    flags |= (1 << 9);   // [9] baro ok
   if (flightAccelOk())   flags |= (1 << 10);  // [10] accel ok
   if (flightIsArmReady()) flags |= (1 << 11); // [11] arm ready
+  // [15:12] slot_seq_idx: slot_index % SLOT_SEQUENCE_LEN, wire-packing for passive sync.
+  // SLOT_SEQUENCE_LEN must be ≤16 for this 4-bit field.
+  flags |= ((uint16_t)(radioGetSlotIndex() % SLOT_SEQUENCE_LEN) & 0x0F) << 12;
   return flags;
 }
 
@@ -241,9 +244,7 @@ static void buildPage0C(uint8_t* buf, size_t* pos) {
   // Sync status and current slot index
   uint8_t syncFlags = radioInSync() ? 0x01 : 0x00;
   if (radioInSync()) {
-    uint64_t elapsed = (uint64_t)micros() - (uint64_t)syncAnchorUs;
-    uint32_t slotNum = (uint32_t)(elapsed / SLOT_DURATION_US);
-    uint8_t seqIdx = (uint8_t)((syncSlotIndex + slotNum) % SLOT_SEQUENCE_LEN);
+    uint8_t seqIdx = (uint8_t)(radioGetSlotIndex() % SLOT_SEQUENCE_LEN);
     syncFlags |= (seqIdx & 0x7F) << 1;
   }
   writeU8(buf, pos, syncFlags);

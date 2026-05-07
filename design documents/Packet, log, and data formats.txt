@@ -21,7 +21,10 @@ These define the over-the-air and over-WebSocket message framing. The type byte 
               [7]    pyro/chute ch3 fired/released
               [8]    low battery
               [9] baro_ok, [10] accel_ok, [11] arm_ready
-              [12:15] reserved
+              [12:15] slot_seq_idx — value of (slot_index % SLOT_SEQUENCE_LEN) at TX time.
+                      Wire-packing only; not a stored variable. Receiver uses this to
+                      compute the slot anchor for passive sync. SLOT_SEQUENCE_LEN must
+                      remain ≤ 16 so the value fits in 4 bits.
       --- 10 bytes fixed, then optionally: ---
       uint8   data page type ID
       (N bytes data page payload, size determined by type ID)

@@ -2,14 +2,12 @@
 // See radio.h for the public API.
 //
 // TEST MODE: uncomment to replace the slot state machine with bare continuous RX.
-// Rocket just listens and logs everything it hears. No telem TX, no sync.
-// Use this to verify DIO1 ISR and basic SPI before debugging the state machine.
 //#define ROCKET_RADIO_TEST_MODE
 
 #include <Arduino.h>
 #include "radio.h"
 #include "sx126x.h"
-#include "sx126x_hal.h"  // sx126x_hal_reset/wakeup declarations, sx126x_hal_status_t
+#include "sx126x_hal.h"
 #include "telemetry.h"
 #include "commands.h"
 #include "globals.h"
@@ -24,7 +22,7 @@ sx126x_hal_context_t radioCtx = {
   .nss           = LORA_NSS_PIN,
   .busy          = LORA_BUSY_PIN,
   .rst           = LORA_RST_PIN,
-  .initMode      = true,   // cleared to false at end of radioInit()
+  .initMode      = true,
   .allowBusyRead = false,
 };
 
@@ -36,29 +34,26 @@ int8_t  activePower   = DEFAULT_POWER;
 float   activeFreqMHz = 917.5f;
 float   activeBwKHz   = 500.0f;
 
+// ===================== HOP SEQUENCE =====================
+
+uint8_t hopSeq[NUM_HOP_CHANNELS];
+
 // ===================== RADIO STATE =====================
 
 bool        loraReady  = false;
 RadioState  radioState = RADIO_STANDBY;
 
-// ===================== PER-SLOT CONFIG STATE (forward-declared for radioStartTx) =====================
-
-static RadioSlotConfig appliedCfg = RADIO_CFG_NORMAL;
-static RadioSlotConfig targetCfg  = RADIO_CFG_NORMAL;
-
 // ===================== SLOT CLOCK STATE =====================
 
-bool          radioSynced        = false;
-unsigned long syncAnchorUs       = 0;
-uint32_t      syncSlotIndex      = 0;
-uint32_t      lastHandledSlotNum = 0xFFFFFFFF;
+unsigned long syncAnchorUs      = 0;
+uint32_t      syncSeedSlotIndex = 0;
+unsigned long lastValidCmdUs    = 0;
 
-// ===================== RSSI EMA =====================
-// Updated at WIN_CMD timeout — channel noise sampled when no command arrives.
+// ===================== MODULATION SNAPSHOT =====================
 
-double rssiEma = 0.0;//average rssi sampled when there is NO packet for us - i.e. background only - do not include samples if an actual packet is recieved
-static bool rssiEmaInit = false;
-#define RSSI_EMA_ALPHA 0.1
+sx126x_mod_params_lora_t savedModParams = {};
+sx126x_pkt_params_lora_t savedPktParams = {};
+bool                      savedIsLR      = false;
 
 // ===================== STATS =====================
 
@@ -69,7 +64,7 @@ uint16_t invalidRxCount = 0;
 
 void updateActiveFreqBw() {
   activeFreqMHz = channelToFreqMHz(activeChannel);
-  activeBwKHz   = (activeChannel < 64) ? 125.0f : 500.0f;
+  activeBwKHz   = channelToBwKHz(activeChannel);
 }
 
 static sx126x_lora_bw_t bwKHzToEnum(float bwKHz) {
@@ -78,19 +73,68 @@ static sx126x_lora_bw_t bwKHzToEnum(float bwKHz) {
   return SX126X_LORA_BW_125;
 }
 
-static sx126x_lora_sf_t sfToEnum(uint8_t sf) {
-  return (sx126x_lora_sf_t)sf;
+// Build modulation params for normal telem/cmd slots using current runtime config.
+static sx126x_mod_params_lora_t buildNormalModParams() {
+  sx126x_mod_params_lora_t mp = {};
+  mp.sf   = (sx126x_lora_sf_t)activeSF;
+  mp.bw   = bwKHzToEnum(activeBwKHz);
+  mp.cr   = SX126X_LORA_CR_4_5;
+  mp.ldro = 0;
+  return mp;
 }
 
-//radio on. show the brighter flash for timing sync (later, might make this separate tx vs rx).
+// Build modulation params for WIN_LR slots.
+static sx126x_mod_params_lora_t buildLRModParams() {
+  sx126x_mod_params_lora_t mp = {};
+  mp.sf   = (sx126x_lora_sf_t)LORA_LR_SF;
+  mp.bw   = bwKHzToEnum(activeBwKHz);
+  mp.cr   = (sx126x_lora_cr_t)LORA_LR_CR;
+  mp.ldro = 1;
+  return mp;
+}
+
+// Build packet params for normal (explicit header, CRC on) TX with given payload length.
+static sx126x_pkt_params_lora_t buildNormalPktParams(uint8_t pldLen) {
+  sx126x_pkt_params_lora_t pp = {};
+  pp.preamble_len_in_symb = LORA_PREAMBLE;
+  pp.header_type          = SX126X_LORA_PKT_EXPLICIT;
+  pp.pld_len_in_bytes     = pldLen;
+  pp.crc_is_on            = true;
+  pp.invert_iq_is_on      = false;
+  return pp;
+}
+
+// Build packet params for WIN_LR TX (implicit header, CRC off, short preamble).
+static sx126x_pkt_params_lora_t buildLRPktParams(uint8_t pldLen) {
+  sx126x_pkt_params_lora_t pp = {};
+  pp.preamble_len_in_symb = 5;
+  pp.header_type          = SX126X_LORA_PKT_IMPLICIT;
+  pp.pld_len_in_bytes     = pldLen;
+  pp.crc_is_on            = false;
+  pp.invert_iq_is_on      = false;
+  return pp;
+}
+
+// Set radio frequency from channel index. Radio must be in standby.
+static void applyFrequency(uint8_t ch) {
+  float freqMHz = channelToFreqMHz(ch);
+  uint32_t freqHz = (uint32_t)(freqMHz * 1e6f + 0.5f);
+  sx126x_set_rf_freq(&radioCtx, freqHz);
+}
+
+// SX1262 errata §15.3: after any RX with implicit header + timeout, stop the RTC timer
+// to prevent a spurious timeout IRQ in the next RX mode.
+static void applyImplicitHeaderErrataFix() {
+  uint8_t val = 0;
+  sx126x_write_register(&radioCtx, 0x0920, &val, 1);
+  sx126x_read_register(&radioCtx, 0x0944, &val, 1);
+  val |= 0x02;
+  sx126x_write_register(&radioCtx, 0x0944, &val, 1);
+}
+
 static void ledOnTX()  { ledcWrite(LED_PIN, 64); }
 static void ledOnRX()  { ledcWrite(LED_PIN, 5); }
-static void ledOff() {
-  // Idle LED: show whether we're in good sync (heard command recently).
-  // Brightness indicates quality: bright = good sync, dim = lost sync.
-  bool inGoodSync = (lastValidCmdUs != 0 && (micros() - lastValidCmdUs) < ROCKET_NO_BASE_HEARD_THRESHOLD_US);
-  ledcWrite(LED_PIN, inGoodSync ? 0 : 1);
-}
+static void ledOff()   { ledcWrite(LED_PIN, 0); }
 
 // ===================== INIT =====================
 
@@ -102,14 +146,14 @@ bool radioInit() {
   digitalWrite(LORA_NSS_PIN, HIGH);
   pinMode(LORA_BUSY_PIN, INPUT);
 
-  // V4 FEM (front-end module) init: enable amplifier and antenna control, PA off initially.
-  // Tracker has no external FEM (DIO2 RF switch handled internally by SX1262).
 #ifdef LORA_FEM_EN_PIN
   pinMode(LORA_FEM_EN_PIN,  OUTPUT); digitalWrite(LORA_FEM_EN_PIN,  HIGH);
   pinMode(LORA_FEM_CTL_PIN, OUTPUT); digitalWrite(LORA_FEM_CTL_PIN, HIGH);
   pinMode(LORA_FEM_PA_PIN,  OUTPUT); digitalWrite(LORA_FEM_PA_PIN,  LOW);
-  Serial.println("LoRa: FEM init (EN=HIGH, CTL=HIGH, PA=LOW)");
+  Serial.println("LoRa: FEM init");
 #endif
+
+  rederiveHopSequence(activeChannel);
 
   Serial.println("LoRa: resetting...");
   sx126x_hal_reset(&radioCtx);
@@ -117,140 +161,89 @@ bool radioInit() {
     Serial.println("LoRa init FAIL: BUSY stuck after reset");
     return false;
   }
-  Serial.println("LoRa: BUSY cleared after reset");
 
   sx126x_status_t st;
   st = sx126x_set_standby(&radioCtx, SX126X_STANDBY_CFG_RC);
-  Serial.print("LoRa: set_standby -> "); Serial.println(st);
   if (st != SX126X_STATUS_OK) return false;
 
-  // TCXO power via DIO3 (voltage set in board_config.h: LORA_TCXO_VOLTAGE).
-  // Without this call the oscillator never starts and the radio accepts SPI commands
-  // but never completes any RF operation (TxDone/RxDone/Timeout never fire).
-  // Timeout = 5ms (320 × 15.625µs steps = 5000µs) for TCXO startup.
-  // Must be called BEFORE set_pkt_type and any modulation config.
   st = sx126x_set_dio3_as_tcxo_ctrl(&radioCtx, LORA_TCXO_VOLTAGE, 320);
-  Serial.print("LoRa: set_dio3_tcxo 1.8V 5ms -> "); Serial.println(st);
-  // After TCXO command, chip re-calibrates — wait for BUSY to clear.
+  Serial.print("LoRa: set_dio3_tcxo -> "); Serial.println(st);
   if (!DO_NOT_CALL_WHILE_ARMED_radioWaitBusy_WARNING_LONG_BLOCKING(&radioCtx, 100)) {
     Serial.println("LoRa init FAIL: BUSY stuck after TCXO setup");
     return false;
   }
 
-  // DC-DC regulator (Heltec board uses DCDC, not LDO).
-  st = sx126x_set_reg_mode(&radioCtx, SX126X_REG_MODE_DCDC);
-  Serial.print("LoRa: set_reg_mode DCDC -> "); Serial.println(st);
-
-  st = sx126x_set_pkt_type(&radioCtx, SX126X_PKT_TYPE_LORA);
-  Serial.print("LoRa: set_pkt_type LORA -> "); Serial.println(st);
-  if (st != SX126X_STATUS_OK) return false;
-
-  st = sx126x_set_dio2_as_rf_sw_ctrl(&radioCtx, true);
-  Serial.print("LoRa: set_dio2_rf_sw -> "); Serial.println(st);
+  sx126x_set_reg_mode(&radioCtx, SX126X_REG_MODE_DCDC);
+  sx126x_set_pkt_type(&radioCtx, SX126X_PKT_TYPE_LORA);
+  sx126x_set_dio2_as_rf_sw_ctrl(&radioCtx, true);
 
   const uint8_t syncWord[2] = { 0x14, 0x24 };
-  st = sx126x_write_register(&radioCtx, 0x0740, syncWord, 2);
-  Serial.print("LoRa: syncword 0x14,0x24 (private 0x12) -> "); Serial.println(st);
+  sx126x_write_register(&radioCtx, 0x0740, syncWord, 2);
 
   radioApplyConfig_BLOCKING();
 
-  // IRQ mask: TX_DONE | RX_DONE | TIMEOUT | CRC_ERROR | HEADER_ERROR — all on DIO1
   sx126x_irq_mask_t irqMask = SX126X_IRQ_TX_DONE | SX126X_IRQ_RX_DONE | SX126X_IRQ_TIMEOUT |
                                SX126X_IRQ_CRC_ERROR | SX126X_IRQ_HEADER_ERROR;
-  st = sx126x_set_dio_irq_params(&radioCtx, irqMask, irqMask, SX126X_IRQ_NONE, SX126X_IRQ_NONE);
-  Serial.print("LoRa: set_irq_params (mask=0x"); Serial.print(irqMask, HEX);
-  Serial.print(") -> "); Serial.println(st);
-
+  sx126x_set_dio_irq_params(&radioCtx, irqMask, irqMask, SX126X_IRQ_NONE, SX126X_IRQ_NONE);
   sx126x_clear_irq_status(&radioCtx, SX126X_IRQ_ALL);
-  Serial.println("LoRa: IRQ cleared");
 
-  // Enable RX boosted mode for improved sensitivity (must be set each init)
-  st = sx126x_cfg_rx_boosted(&radioCtx, LORA_RX_BOOSTED);
-  Serial.print("LoRa: RX boosted -> "); Serial.println(st);
+  sx126x_cfg_rx_boosted(&radioCtx, LORA_RX_BOOSTED);
 
   radioMcpwmInit(LORA_DIO1_PIN);
-  Serial.print("LoRa: DIO1 interrupt attached on GPIO"); Serial.println(LORA_DIO1_PIN);
 
   radioCtx.initMode = false;
-
   radioState = RADIO_STANDBY;
 
   Serial.print("LoRa init OK: ch="); Serial.print(activeChannel);
-  Serial.print(" freq="); Serial.print(activeFreqMHz, 1); Serial.print("MHz");
-  Serial.print(" SF="); Serial.print(activeSF);
-  Serial.print(" BW="); Serial.print((int)activeBwKHz); Serial.print("kHz");
-  Serial.print(" pwr="); Serial.print(activePower); Serial.print("dBm");
-  Serial.print(" preamble="); Serial.print(LORA_PREAMBLE); Serial.println("sym");
+  Serial.print(" "); Serial.print(activeFreqMHz, 1); Serial.print("MHz SF");
+  Serial.print(activeSF); Serial.print(" BW"); Serial.print((int)activeBwKHz);
+  Serial.print("kHz pwr="); Serial.print(activePower); Serial.println("dBm");
   return true;
 }
 
 void radioApplyConfig_BLOCKING() {
-  // BLOCKING — init path only. Contains DO_NOT_CALL_WHILE_ARMED_radioWaitBusy_WARNING_LONG_BLOCKING
-  // calls (up to 100ms each). If called from CMD_SET_RADIO, that command must be
-  // refused while armed.
-  sx126x_mod_params_lora_t modParams = {};
-  modParams.sf = sfToEnum(activeSF);
-  modParams.bw = bwKHzToEnum(activeBwKHz);
-  modParams.cr = SX126X_LORA_CR_4_5;
-  modParams.ldro = 0;
-  sx126x_status_t st = sx126x_set_lora_mod_params(&radioCtx, &modParams);
-  Serial.print("LoRa applyConfig: mod_params SF="); Serial.print(activeSF);
-  Serial.print(" BW="); Serial.print((int)activeBwKHz);
-  Serial.print(" CR=4/5 -> "); Serial.println(st);
+  sx126x_mod_params_lora_t mp = buildNormalModParams();
+  sx126x_set_lora_mod_params(&radioCtx, &mp);
   DO_NOT_CALL_WHILE_ARMED_radioWaitBusy_WARNING_LONG_BLOCKING(&radioCtx);
 
-  sx126x_pkt_params_lora_t pktParams = {};
-  pktParams.preamble_len_in_symb = LORA_PREAMBLE;
-  pktParams.header_type          = SX126X_LORA_PKT_EXPLICIT;
-  pktParams.pld_len_in_bytes     = 255;
-  pktParams.crc_is_on            = true;
-  pktParams.invert_iq_is_on      = false;
-  st = sx126x_set_lora_pkt_params(&radioCtx, &pktParams);
-  Serial.print("LoRa applyConfig: pkt_params preamble="); Serial.print(LORA_PREAMBLE);
-  Serial.print(" explicit_hdr crc_on iq_normal -> "); Serial.println(st);
+  sx126x_pkt_params_lora_t pp = buildNormalPktParams(255);
+  sx126x_set_lora_pkt_params(&radioCtx, &pp);
   DO_NOT_CALL_WHILE_ARMED_radioWaitBusy_WARNING_LONG_BLOCKING(&radioCtx);
 
   uint32_t freqHz = (uint32_t)(activeFreqMHz * 1e6f + 0.5f);
-  st = sx126x_set_rf_freq(&radioCtx, freqHz);
-  Serial.print("LoRa applyConfig: freq="); Serial.print(freqHz); Serial.print("Hz -> "); Serial.println(st);
+  sx126x_set_rf_freq(&radioCtx, freqHz);
   DO_NOT_CALL_WHILE_ARMED_radioWaitBusy_WARNING_LONG_BLOCKING(&radioCtx);
 
-  // PA config must come BEFORE SetTxParams per SX1262 datasheet §13.1.14.
   sx126x_pa_cfg_params_t paCfg = { .pa_duty_cycle = 0x04, .hp_max = 0x07, .device_sel = 0x00, .pa_lut = 0x01 };
-  st = sx126x_set_pa_cfg(&radioCtx, &paCfg);
-  Serial.print("LoRa applyConfig: pa_cfg duty=0x04 hp_max=0x07 device_sel=0 -> "); Serial.println(st);
+  sx126x_set_pa_cfg(&radioCtx, &paCfg);
   DO_NOT_CALL_WHILE_ARMED_radioWaitBusy_WARNING_LONG_BLOCKING(&radioCtx);
 
-  st = sx126x_set_tx_params(&radioCtx, activePower, SX126X_RAMP_200_US);
-  Serial.print("LoRa applyConfig: tx_params pwr="); Serial.print(activePower); Serial.print("dBm ramp=200us -> "); Serial.println(st);
+  sx126x_set_tx_params(&radioCtx, activePower, SX126X_RAMP_200_US);
   DO_NOT_CALL_WHILE_ARMED_radioWaitBusy_WARNING_LONG_BLOCKING(&radioCtx);
+
+  // Re-derive hop sequence in case activeChannel changed.
+  rederiveHopSequence(activeChannel);
 }
 
 // ===================== WIN_LR PACKET BUILDER =====================
 
-// Builds the 3-byte on-air core for the 0xBB long-range packet.
-// Encodes dithered lat/lon fractions and low-battery flag.
-// Returns 3. buf must be at least 3 bytes.
 size_t buildLRPacketCore(uint8_t* buf) {
-  uint16_t latFrac = 0x7FF;  // >=2000 = error sentinel in 11 bits
+  uint16_t latFrac = 0x7FF;
   uint16_t lonFrac = 0x7FF;
   if (gps.valid) {
     double latF = fmod(fabs(gps.lat), 1.0) * 2000.0;
     double lonF = fmod(fabs(gps.lon), 1.0) * 2000.0;
-    // Probabilistic rounding: fractional part = probability of rounding up.
     latFrac = (uint16_t)latF + ((rand() / (float)RAND_MAX) < (latF - (int)latF) ? 1 : 0);
     lonFrac = (uint16_t)lonF + ((rand() / (float)RAND_MAX) < (lonF - (int)lonF) ? 1 : 0);
     if (latFrac > 1999) latFrac = 1999;
     if (lonFrac > 1999) lonFrac = 1999;
   }
-  // Low battery: 100% true at <=3400mV, 0% true at >=3700mV, probabilistic between.
   bool lowBatt = false;
   if (batteryMv <= 3400) {
     lowBatt = true;
   } else if (batteryMv < 3700) {
     lowBatt = ((rand() / (float)RAND_MAX) < (3700.0f - (float)batteryMv) / 300.0f);
   }
-  // Bit layout: [0..10]=latFrac, [11..21]=lonFrac, [22]=lowBatt, [23]=reserved
   uint32_t word = ((uint32_t)(latFrac & 0x7FF))
                 | ((uint32_t)(lonFrac & 0x7FF) << 11)
                 | ((uint32_t)lowBatt            << 22);
@@ -260,97 +253,69 @@ size_t buildLRPacketCore(uint8_t* buf) {
   return 3;
 }
 
-// ===================== SYNC =====================
-
-void radioSetSynced(unsigned long anchorUs, uint8_t slotIdx) {
-  radioStandby();
-  dio1Fired              = false;
-  radioState             = RADIO_STANDBY;
-  syncAnchorUs           = anchorUs;
-  syncSlotIndex          = slotIdx;
-  lastHandledSlotNum     = 0xFFFFFFFF;
-  lastValidCmdUs         = (unsigned long)micros();  // Sync packet is a command — updates our sync state
-  Serial.print("SYNC: anchor="); Serial.print(anchorUs);
-  Serial.print("us slotIdx="); Serial.println(slotIdx);
-}
-
 // ===================== RX / TX =====================
 
-void radioStartRxTimeout(uint32_t timeoutRtcSteps) {
-  // Wait for BUSY to clear (BUSY should drop within ~20µs after standby is set in IRQ).
-  // If it stays high, we skip this RX attempt and will retry next slot.
-  // Bounded to 100µs to avoid blocking while armed.
+void radioStartRxTimeout(uint32_t timeoutRtcSteps,
+                         const sx126x_mod_params_lora_t& modParams,
+                         const sx126x_pkt_params_lora_t& pktParams,
+                         bool isLR) {
+  if (digitalRead(LORA_BUSY_PIN)) {
+    Serial.println("RX: BUSY at start — skip");
+    return;
+  }
+
+  // Apply modulation and packet params unconditionally.
+  sx126x_set_lora_mod_params(&radioCtx, &modParams);
   {
     unsigned long t0 = micros();
-    while (digitalRead(LORA_BUSY_PIN)) {
-      if (micros() - t0 > 100) {
-        Serial.print("RX: BUSY stuck >100µs timeout="); Serial.print(timeoutRtcSteps);
-        Serial.println(" RTC");
-        return;
-      }
-    }
+    while (digitalRead(LORA_BUSY_PIN) && (micros() - t0) < 100) {}
   }
+  sx126x_set_lora_pkt_params(&radioCtx, &pktParams);
+
   sx126x_clear_irq_status(&radioCtx, SX126X_IRQ_ALL);
   dio1Fired = false;
+
   sx126x_status_t st = sx126x_set_rx_with_timeout_in_rtc_step(&radioCtx, timeoutRtcSteps);
   if (st == SX126X_STATUS_OK) {
-    radioState = RADIO_RX_ACTIVE;
+    radioState      = RADIO_RX_ACTIVE;
+    savedModParams  = modParams;
+    savedPktParams  = pktParams;
+    savedIsLR       = isLR;
     ledOnRX();
     if (LOG_RX_START) {
-      uint64_t nowUs     = (uint64_t)micros();
-      uint64_t elapsed   = nowUs - (uint64_t)syncAnchorUs;
-      uint32_t slotNum   = (uint32_t)(elapsed / SLOT_DURATION_US);
-      uint32_t posInSlot = (uint32_t)(elapsed % SLOT_DURATION_US);
-      uint8_t  seqIdx    = (uint8_t)((syncSlotIndex + slotNum) % SLOT_SEQUENCE_LEN);
-      uint32_t timeoutUs = (uint32_t)(timeoutRtcSteps * 15.625f);
-      Serial.print("RxStart: posInSlot="); Serial.print(posInSlot);
-      Serial.print("us slot="); Serial.print(slotNum);
-      Serial.print(" seqIdx="); Serial.print(seqIdx);
-      Serial.print(" win="); Serial.print((int)SLOT_SEQUENCE[seqIdx]);
-      Serial.print(" timeout="); Serial.print(timeoutUs); Serial.println("us");
+      Serial.print("RxStart: slot="); Serial.print(radioGetSlotIndex());
+      Serial.print(" ch="); Serial.print(hopChannel(radioGetSlotIndex()));
+      Serial.print(" timeout="); Serial.print((uint32_t)(timeoutRtcSteps * 15.625f));
+      Serial.println("us");
     }
   } else {
-    Serial.print("RX: set_rx fail st="); Serial.print(st);
-    Serial.print(" rtc="); Serial.println(timeoutRtcSteps);
+    Serial.print("RX: set_rx fail st="); Serial.println(st);
     radioState = RADIO_STANDBY;
   }
 }
 
-void radioStartRx() {
-  // Always use a timeout — continuous RX means the radio never returns to standby
-  // between slots, blocking any TX that needs to preempt it.
-  // Short RX window when we've heard a valid command recently (within ROCKET_NO_BASE_HEARD_THRESHOLD_US).
-  // Long RX window otherwise (lost-rocket recovery) to catch a fresh command after timing drift.
-  bool hasRecentCommand = (lastValidCmdUs != 0 &&
-                           (micros() - lastValidCmdUs) < ROCKET_NO_BASE_HEARD_THRESHOLD_US);
-  uint32_t timeoutUs = hasRecentCommand ? ROCKET_RX_TIMEOUT_US : ROCKET_LONG_RX_TIMEOUT_US;
-  radioStartRxTimeout((uint32_t)(timeoutUs / 15.625f));
-}
-
-bool radioStartTx(const uint8_t* pkt, size_t len) {
+bool radioStartTx(const uint8_t* pkt, size_t len,
+                  const sx126x_mod_params_lora_t& modParams,
+                  const sx126x_pkt_params_lora_t& pktParams,
+                  bool isLR) {
   if (digitalRead(LORA_BUSY_PIN)) {
     Serial.println("TX: BUSY — skip");
     return false;
   }
+
+  // Apply modulation and packet params unconditionally.
+  sx126x_set_lora_mod_params(&radioCtx, &modParams);
+  {
+    unsigned long t0 = micros();
+    while (digitalRead(LORA_BUSY_PIN) && (micros() - t0) < 100) {}
+  }
+  // For TX, rebuild pkt params with actual payload length.
+  sx126x_pkt_params_lora_t ppTx = pktParams;
+  ppTx.pld_len_in_bytes = (uint8_t)len;
+  sx126x_set_lora_pkt_params(&radioCtx, &ppTx);
+
   sx126x_clear_irq_status(&radioCtx, SX126X_IRQ_ALL);
   dio1Fired = false;
-
-  // Set pkt params to match current slot config. WIN_LR uses implicit header + no CRC;
-  // all other slots (currently) use explicit header + CRC. Must be set before each TX.
-  sx126x_pkt_params_lora_t pp = {};
-  if (appliedCfg == RADIO_CFG_LR) {
-    pp.preamble_len_in_symb = 5;
-    pp.header_type          = SX126X_LORA_PKT_IMPLICIT;
-    pp.pld_len_in_bytes     = (uint8_t)len;
-    pp.crc_is_on            = false;
-  } else {
-    pp.preamble_len_in_symb = LORA_PREAMBLE;
-    pp.header_type          = SX126X_LORA_PKT_EXPLICIT;
-    pp.pld_len_in_bytes     = (uint8_t)len;
-    pp.crc_is_on            = true;
-  }
-  pp.invert_iq_is_on = false;
-  sx126x_set_lora_pkt_params(&radioCtx, &pp);
 
   sx126x_status_t st = sx126x_write_buffer(&radioCtx, 0, pkt, (uint8_t)len);
   if (st != SX126X_STATUS_OK) {
@@ -358,32 +323,25 @@ bool radioStartTx(const uint8_t* pkt, size_t len) {
     return false;
   }
 
-  // Non-blocking BUSY check after write_buffer. If still BUSY, abort TX for this slot.
-  // The slot machine will attempt TX again next slot boundary — no spin.
   if (digitalRead(LORA_BUSY_PIN)) {
     Serial.println("TX: BUSY after write_buffer — abort");
     return false;
   }
 
-  // V4 FEM PA: enable amplifier for TX (Tracker has no external FEM).
 #ifdef LORA_FEM_PA_PIN
   digitalWrite(LORA_FEM_PA_PIN, HIGH);
 #endif
 
-  st = sx126x_set_tx(&radioCtx, 0);  // timeout=0 = no TX timeout (fires TxDone when done)
+  st = sx126x_set_tx(&radioCtx, 0);
   if (st == SX126X_STATUS_OK) {
-    radioState = RADIO_TX_ACTIVE;
+    radioState     = RADIO_TX_ACTIVE;
+    savedModParams = modParams;
+    savedPktParams = ppTx;
+    savedIsLR      = isLR;
     ledOnTX();
     if (LOG_TX_START) {
-      uint64_t nowUs     = (uint64_t)micros();
-      uint64_t elapsed   = nowUs - (uint64_t)syncAnchorUs;
-      uint32_t slotNum   = (uint32_t)(elapsed / SLOT_DURATION_US);
-      uint32_t posInSlot = (uint32_t)(elapsed % SLOT_DURATION_US);
-      uint8_t  seqIdx    = (uint8_t)((syncSlotIndex + slotNum) % SLOT_SEQUENCE_LEN);
-      Serial.print("TxStart: posInSlot="); Serial.print(posInSlot);
-      Serial.print("us slot="); Serial.print(slotNum);
-      Serial.print(" seqIdx="); Serial.print(seqIdx);
-      Serial.print(" win="); Serial.print((int)SLOT_SEQUENCE[seqIdx]);
+      Serial.print("TxStart: slot="); Serial.print(radioGetSlotIndex());
+      Serial.print(" ch="); Serial.print(hopChannel(radioGetSlotIndex()));
       Serial.print(" len="); Serial.println((unsigned)len);
     }
     return true;
@@ -394,7 +352,6 @@ bool radioStartTx(const uint8_t* pkt, size_t len) {
 }
 
 void radioStandby() {
-  // V4 FEM PA: disable amplifier (Tracker has no external FEM).
 #ifdef LORA_FEM_PA_PIN
   digitalWrite(LORA_FEM_PA_PIN, LOW);
 #endif
@@ -441,12 +398,7 @@ static void handleRxDone() {
     invalidRxCount++;
     return;
   }
-//TODO: WTF: no the bg rssi ema is for the non-packet times, when there iisnt any signal.. it should EXCLUDE packet rssis. the packet rssi goes into the cmd ack, but not into the bgrssi
-  // Update noise floor EMA from actual received packet RSSI.
-  //if (!rssiEmaInit) { rssiEma = pktRssi; rssiEmaInit = true; }
-  //else rssiEma += RSSI_EMA_ALPHA * (pktRssi - rssiEma);
 
-  // Log one summary line per received packet, no faster than 1/sec.
   static unsigned long lastRxLogMs = 0;
   unsigned long nowMs = millis();
   if (nowMs - lastRxLogMs >= 1000) {
@@ -462,7 +414,6 @@ static void handleRxDone() {
 }
 
 static void radioHandleIrq() {
-  //TODO: wtf: is this actually the irq handler? if so, this is way too big for an isr - but it looks like its just called if polling sees the flag true - so this needs to be renamed something more appropriate
   uint64_t eventUs = dio1TimestampUs();
   dio1Fired = false;
 
@@ -476,39 +427,21 @@ static void radioHandleIrq() {
   }
 
   if (irqFlags & SX126X_IRQ_TX_DONE) {
-    // V4 FEM PA: disable amplifier at end of TX (Tracker has no external FEM).
 #ifdef LORA_FEM_PA_PIN
     digitalWrite(LORA_FEM_PA_PIN, LOW);
 #endif
     radioState = RADIO_STANDBY;
-    if (LOG_TX_DONE)
-    {
-      uint64_t elapsed   = eventUs - (uint64_t)syncAnchorUs;
-      uint32_t slotNum   = (uint32_t)(elapsed / SLOT_DURATION_US);
-      uint32_t posInSlot = (uint32_t)(elapsed % SLOT_DURATION_US);
-      uint8_t  seqIdx    = (uint8_t)((syncSlotIndex + slotNum) % SLOT_SEQUENCE_LEN);
-      Serial.print("TxDone: posInSlot="); Serial.print(posInSlot);
-      Serial.print("us slot="); Serial.print(slotNum);
-      Serial.print(" seqIdx="); Serial.print(seqIdx);
-      Serial.print(" win="); Serial.println((int)SLOT_SEQUENCE[seqIdx]);
-    }
     ledOff();
+    if (LOG_TX_DONE) {
+      Serial.print("TxDone: slot="); Serial.println((eventUs - syncAnchorUs) / SLOT_DURATION_US + syncSeedSlotIndex);
+    }
   }
 
   if (irqFlags & SX126X_IRQ_RX_DONE) {
     radioState = RADIO_STANDBY;
-    // Log RxDone timing relative to current slot — diagnostic for sync drift. Pre-sync
-    // the anchor is 0 so posInSlot is (micros() % SLOT_DURATION); that's still useful
-    // because CMD_SET_SYNC RxDone is the event that SETS the anchor.
+    if (savedIsLR) applyImplicitHeaderErrataFix();
     if (LOG_RX_DONE) {
-      uint64_t elapsed   = eventUs - (uint64_t)syncAnchorUs;
-      uint32_t slotNum   = (uint32_t)(elapsed / SLOT_DURATION_US);
-      uint32_t posInSlot = (uint32_t)(elapsed % SLOT_DURATION_US);
-      uint8_t  seqIdx    = (uint8_t)((syncSlotIndex + slotNum) % SLOT_SEQUENCE_LEN);
-      Serial.print("RxDone: posInSlot="); Serial.print(posInSlot);
-      Serial.print("us slot="); Serial.print(slotNum);
-      Serial.print(" seqIdx="); Serial.print(seqIdx);
-      Serial.print(" win="); Serial.println((int)SLOT_SEQUENCE[seqIdx]);
+      Serial.print("RxDone: slot="); Serial.println((eventUs - syncAnchorUs) / SLOT_DURATION_US + syncSeedSlotIndex);
     }
     handleRxDone();
     ledOff();
@@ -516,24 +449,17 @@ static void radioHandleIrq() {
 
   if (irqFlags & SX126X_IRQ_TIMEOUT) {
     radioState = RADIO_STANDBY;
-    // Debug: log when RX timeout fires
+    if (savedIsLR) applyImplicitHeaderErrataFix();
+    ledOff();
     static unsigned long rxTimeoutCountTotal = 0;
     rxTimeoutCountTotal++;
     if (rxTimeoutCountTotal % 10 == 0) {
-      Serial.print("RX_TIMEOUT fired (count="); Serial.print(rxTimeoutCountTotal);
-      Serial.print(" slot="); Serial.print((eventUs - syncAnchorUs) / SLOT_DURATION_US);
+      Serial.print("RX_TIMEOUT (count="); Serial.print(rxTimeoutCountTotal);
+      Serial.print(" slot="); Serial.print((eventUs - syncAnchorUs) / SLOT_DURATION_US + syncSeedSlotIndex);
       Serial.println(")");
     }
-    ledOff();
     if (LOG_RX_TIMEOUT) {
-      uint64_t elapsed   = eventUs - (uint64_t)syncAnchorUs;
-      uint32_t slotNum   = (uint32_t)(elapsed / SLOT_DURATION_US);
-      uint32_t posInSlot = (uint32_t)(elapsed % SLOT_DURATION_US);
-      uint8_t  seqIdx    = (uint8_t)((syncSlotIndex + slotNum) % SLOT_SEQUENCE_LEN);
-      Serial.print("RxTimeout: posInSlot="); Serial.print(posInSlot);
-      Serial.print("us slot="); Serial.print(slotNum);
-      Serial.print(" seqIdx="); Serial.print(seqIdx);
-      Serial.print(" win="); Serial.println((int)SLOT_SEQUENCE[seqIdx]);
+      Serial.print("RxTimeout: slot="); Serial.println((eventUs - syncAnchorUs) / SLOT_DURATION_US + syncSeedSlotIndex);
     }
   }
 
@@ -541,14 +467,12 @@ static void radioHandleIrq() {
     radioState = RADIO_STANDBY;
     ledOff();
     invalidRxCount++;
-    // Rate-limit header/CRC error logs — they can be frequent on a busy channel.
     static unsigned long lastRxErrLogMs = 0;
     unsigned long nowMs = millis();
     if (nowMs - lastRxErrLogMs >= 5000) {
       lastRxErrLogMs = nowMs;
-      Serial.print("RX: ");
-      if (irqFlags & SX126X_IRQ_CRC_ERROR)    Serial.print("CRC_ERROR ");
-      if (irqFlags & SX126X_IRQ_HEADER_ERROR) Serial.print("HEADER_ERROR ");
+      if (irqFlags & SX126X_IRQ_CRC_ERROR)    Serial.print("RX: CRC_ERROR ");
+      if (irqFlags & SX126X_IRQ_HEADER_ERROR) Serial.print("RX: HEADER_ERROR ");
       Serial.println();
     }
   }
@@ -558,207 +482,186 @@ static void radioHandleIrq() {
     unsigned long nowMs = millis();
     if (nowMs - lastSpuriousLogMs >= 1000) {
       lastSpuriousLogMs = nowMs;
-      Serial.print("IRQ: flags=0 (spurious or ISR race) radioState=");
-      Serial.print(radioState);
-      Serial.print(" BUSY=");
-      Serial.println(digitalRead(LORA_BUSY_PIN));
+      Serial.print("IRQ: flags=0 radioState="); Serial.print(radioState);
+      Serial.print(" BUSY="); Serial.println(digitalRead(LORA_BUSY_PIN));
     }
-    // Don't change state — radio is still doing whatever it was doing.
   }
 }
 
 // ===================== MAIN RADIO STATE MACHINE =====================
 //
-// Single slot-based path — anchor=0 pre-sync, anchor=RxDone time when synced.
-// WIN_TELEM: TX telem at slot boundary (or RX if txSendingEnabled=false).
-// WIN_CMD:   RX for the slot. radioStartRx() picks short vs long timeout:
-//            - short (ROCKET_RX_TIMEOUT_US) when synced and heard a valid cmd recently
-//            - long (ROCKET_LONG_RX_TIMEOUT_US) when never-synced this session OR when
-//              synced but no valid cmd in ROCKET_NO_BASE_HEARD_THRESHOLD_US (lost-rocket
-//              recovery — lets a fresh CMD_SET_SYNC land after drift).
-// LED: on whenever radio is active (RX or TX), off when standby.
-
-static unsigned long lastTelemTxUs = 0;
+// Slot-based scheduling driven by nextActionUs timestamp.
+// WIN_TELEM: TX telemetry on hopped channel at each slot boundary.
+// WIN_CMD:   RX for commands on fixed command channel.
+// WIN_LR:    TX long-range packet on hopped channel.
+// WIN_CONTINUE: no-op, extends previous slot.
+// WIN_OFF:   radio standby.
 
 #ifdef ROCKET_RADIO_TEST_MODE
-// In test mode: just RX continuously, log everything received. No TX, no sync.
 void nonblockingRadio() {
   if (!loraReady) return;
-  static uint32_t lastIsrCount = 0;
-  uint32_t isrNow = dio1IsrCount;
-  if (isrNow != lastIsrCount) {
-    Serial.print("TEST DIO1 ISR! count="); Serial.println(isrNow);
-    lastIsrCount = isrNow;
-  }
   if (!dio1Fired && digitalRead(LORA_DIO1_PIN) &&
       (radioState == RADIO_TX_ACTIVE || radioState == RADIO_RX_ACTIVE)) {
-    Serial.println("TEST DIO1 pin HIGH (poll fallback)");
     dio1CaptureVal = micros();
     dio1Fired = true;
   }
-  static unsigned long tLastIrqPollMs = 0;
-  {
-    unsigned long npMs = millis();
-    if ((radioState == RADIO_TX_ACTIVE || radioState == RADIO_RX_ACTIVE) &&
-        !dio1Fired && (npMs - tLastIrqPollMs) >= 100) {
-      tLastIrqPollMs = npMs;
-      sx126x_irq_mask_t irqFlags = 0;
-      sx126x_get_irq_status(&radioCtx, &irqFlags);
-      if (irqFlags != 0) {
-        Serial.print("TEST IRQ poll hit: flags=0x"); Serial.println(irqFlags, HEX);
-        dio1CaptureVal = micros();
-        dio1Fired = true;
-      } else {
-        Serial.print("TEST IRQ poll: 0 busy="); Serial.println(digitalRead(LORA_BUSY_PIN));
-      }
-    }
-  }
   if (dio1Fired) radioHandleIrq();
-  if (radioState == RADIO_STANDBY) radioStartRx();
+  if (radioState == RADIO_STANDBY) {
+    sx126x_mod_params_lora_t mp = buildNormalModParams();
+    sx126x_pkt_params_lora_t pp = buildNormalPktParams(255);
+    uint32_t timeoutUs = 100'000UL;
+    radioStartRxTimeout((uint32_t)(timeoutUs / 15.625f), mp, pp, false);
+  }
 }
 #else
 
-// ===================== PER-SLOT CONFIG SWITCH =====================
-// Applies slot radio params when targetCfg differs from appliedCfg.
-// Two SPI commands back-to-back; BUSY between them spins up to 100µs (typical: <20µs).
-// Called once per slot boundary — not every loop — so 100µs is well within budget.
-
-static bool applyCfgIfNeeded() {
-  uint64_t nowUs = (uint64_t)micros();
-  uint64_t elapsed = nowUs - (uint64_t)syncAnchorUs;
-  uint32_t slotNum = (uint32_t)(elapsed / SLOT_DURATION_US);
-  uint32_t posInSlot = (uint32_t)(elapsed % SLOT_DURATION_US);
-  uint8_t seqIdx = (uint8_t)((syncSlotIndex + slotNum) % SLOT_SEQUENCE_LEN);
-  if (radioState != RADIO_STANDBY) {
-    Serial.print("applyCfg FAILED: radioState="); Serial.print(radioState);
-    Serial.print(" (not STANDBY) at posInSlot="); Serial.print(posInSlot);
-    Serial.print("us slot="); Serial.print(slotNum);
-    Serial.print(" seqIdx="); Serial.println(seqIdx);
-    return false;
-  }
-
-  sx126x_mod_params_lora_t mp = {};
-  if (targetCfg == RADIO_CFG_LR) {
-    mp.sf   = (sx126x_lora_sf_t)LORA_LR_SF;
-    mp.bw   = bwKHzToEnum(activeBwKHz);
-    mp.cr   = (sx126x_lora_cr_t)LORA_LR_CR;
-    mp.ldro = 1;
-    if (LOG_APPLYCFG) {
-      Serial.print("applyCfg: LR SF"); Serial.print(LORA_LR_SF);
-      Serial.print(" BW"); Serial.print((int)activeBwKHz); Serial.println(" CR-LI LDRO");
-    }
-  } else {
-    mp.sf   = sfToEnum(activeSF);
-    mp.bw   = bwKHzToEnum(activeBwKHz);
-    mp.cr   = SX126X_LORA_CR_4_5;
-    mp.ldro = 0;
-    if (LOG_APPLYCFG) {
-      Serial.print("applyCfg: NORMAL @ pis=");
-      Serial.println(posInSlot);
-    }
-  }
-  sx126x_set_lora_mod_params(&radioCtx, &mp);
-
-  // Wait for BUSY to clear between the two SPI commands. Typical: <20µs. Hard cap: 100µs.
-  unsigned long t0 = micros();
-  while (digitalRead(LORA_BUSY_PIN) && (micros() - t0) < 100) {}
-
-  sx126x_pkt_params_lora_t pp = {};
-  if (targetCfg == RADIO_CFG_LR) {
-    pp.preamble_len_in_symb = 5;
-    pp.header_type          = SX126X_LORA_PKT_IMPLICIT;
-    pp.pld_len_in_bytes     = 3;
-    pp.crc_is_on            = false;
-  } else {
-    pp.preamble_len_in_symb = LORA_PREAMBLE;
-    pp.header_type          = SX126X_LORA_PKT_EXPLICIT;
-    pp.pld_len_in_bytes     = 255;
-    pp.crc_is_on            = true;
-  }
-  pp.invert_iq_is_on = false;
-  sx126x_set_lora_pkt_params(&radioCtx, &pp);
-
-  appliedCfg = targetCfg;
-  return true;
-}
+// nextActionUs: micros() timestamp at which the next slot action should begin.
+// Computed when starting each action; the loop polls micros() vs this stamp.
+static unsigned long nextActionUs = 0;
+// Slot index corresponding to the next action (used to detect when the slot changes).
+static uint32_t      nextActionSlotIndex = 0;
+// Consecutive unexpected overruns (busy radio at slot boundary, excluding WIN_CONTINUE).
+static uint8_t       unexpectedOverruns = 0;
 
 void nonblockingRadio() {
   if (!loraReady) return;
 
+  // Always handle IRQ first if DIO1 fired.
   if (dio1Fired) {
     radioHandleIrq();
   }
 
-  if (radioState == RADIO_TX_ACTIVE) return;  // TX in progress — wait for TxDone IRQ
+  unsigned long now = micros();
 
-  // Single slot-based path for both pre-sync and synced operation.
-  // Pre-sync: anchor=0, slots cycle from boot. WIN_CMD RX uses the long window.
-  // Synced: anchor from CMD_SET_SYNC RxDone. WIN_CMD RX short by default, long if we
-  //   haven't heard from base in ROCKET_NO_BASE_HEARD_THRESHOLD_US (see radioStartRx).
-  unsigned long now      = micros();
-  unsigned long elapsed  = now - syncAnchorUs;
-  uint32_t      slotNum  = (uint32_t)(elapsed / SLOT_DURATION_US);
-  uint8_t       seqIdx   = (uint8_t)((syncSlotIndex + slotNum) % SLOT_SEQUENCE_LEN);
-  WindowMode    win      = SLOT_SEQUENCE[seqIdx];
+  // Compute current slot state.
+  uint32_t slotIndex = radioGetSlotIndex();
+  uint8_t  seqIdx    = (uint8_t)(slotIndex % SLOT_SEQUENCE_LEN);
+  WindowMode win     = SLOT_SEQUENCE[seqIdx];
+  uint8_t  ch        = hopChannel(slotIndex);
 
-  static bool slotActionDone = false;  // true after TX fired or RX started this slot
-
-  // On new slot boundary: never force standby on an active RX. If radioState is still
-  // RADIO_RX_ACTIVE, the SX1262 is either still in the preamble detection window or actively
-  // receiving a packet. The hardware timeout (no preamble) or packet-end IRQ will return it
-  // to STANDBY on its own. Forcing standby mid-packet loses the frame.
-  // applyCfgIfNeeded() is a no-op while RX_ACTIVE and will retry next slot boundary.
-  // Safety cutoff: if RX has been active for more than RX_STUCK_MAX_SLOTS full slots,
-  // something is stuck (missed DIO1 or IRQ failure) — force standby to recover.
-  static unsigned long rxActiveStartUs = 0;
-  if (radioState == RADIO_RX_ACTIVE && rxActiveStartUs == 0) rxActiveStartUs = now;
-  if (radioState != RADIO_RX_ACTIVE) rxActiveStartUs = 0;
-  if (radioState == RADIO_RX_ACTIVE &&
-      (now - rxActiveStartUs) > RX_STUCK_MAX_SLOTS * SLOT_DURATION_US) {
-    Serial.print("RADIO: RX stuck >"); Serial.print(RX_STUCK_MAX_SLOTS);
-    Serial.println(" slots — forcing standby");
-    radioStandby();
-    rxActiveStartUs = 0;
+  // Compute the timestamp for this slot's action.
+  // nextActionUs is set when we start an action; if it hasn't been set yet (boot),
+  // initialise it to now so we start the first slot immediately.
+  if (nextActionUs == 0) {
+    nextActionUs        = now;
+    nextActionSlotIndex = slotIndex;
   }
 
-  if (slotNum != lastHandledSlotNum) {
-    lastHandledSlotNum = slotNum;
-    slotActionDone = false;
+  // WIN_CONTINUE: no radio action, no overrun counting. Just advance nextActionUs.
+  if (win == WIN_CONTINUE) {
+    if (slotIndex != nextActionSlotIndex) {
+      nextActionSlotIndex = slotIndex;
+      // Advance to after this continue slot.
+      nextActionUs = syncAnchorUs + (uint32_t)((slotIndex - syncSeedSlotIndex + 1) * SLOT_DURATION_US);
+    }
+    return;
+  }
 
-    RadioSlotConfig newTarget = (win == WIN_LR) ? RADIO_CFG_LR : RADIO_CFG_NORMAL;
-    if (newTarget != targetCfg) targetCfg = newTarget;
+  // Not yet time for the next action.
+  if ((long)(now - nextActionUs) < 0) return;
 
-    if (!applyCfgIfNeeded()) {
-      // Config failed to apply — skip TX/RX for this slot.
-      slotActionDone = true;
-      return;
+  // Time has come (or overdue). Check overrun conditions before checking BUSY.
+  bool isOverrun = false;
+
+  if (win == WIN_TELEM || win == WIN_LR) {
+    // TX: skip if more than 10ms late.
+    if ((long)(now - nextActionUs) > 10'000L) {
+      isOverrun = true;
+      delayedTxCount++;
+    }
+  } else if (win == WIN_CMD) {
+    // RX: skip if remaining time in slot is < BS_RX_MIN_REMAINING_US equivalent.
+    unsigned long slotEndUs = syncAnchorUs + (uint32_t)((slotIndex - syncSeedSlotIndex + 1) * SLOT_DURATION_US);
+    if ((long)(slotEndUs - now) < (long)BS_RX_MIN_REMAINING_US) {
+      isOverrun = true;
     }
   }
 
-  if (radioState != RADIO_STANDBY) return;
-  if (slotActionDone) return;  // TX complete or RX started — wait for next slot boundary
+  if (isOverrun) {
+    unexpectedOverruns++;
+    Serial.print("RADIO: overrun win="); Serial.print((int)win);
+    Serial.print(" count="); Serial.println(unexpectedOverruns);
+    if (unexpectedOverruns >= 3) {
+      Serial.println("RADIO: 3 overruns — forcing standby");
+      radioStandby();
+      unexpectedOverruns = 0;
+    }
+    // Advance to next slot.
+    nextActionSlotIndex = slotIndex + 1;
+    nextActionUs = syncAnchorUs + (uint32_t)((slotIndex - syncSeedSlotIndex + 1) * SLOT_DURATION_US);
+    return;
+  }
 
-  slotActionDone = true;
+  // Check BUSY pin. If busy, the radio is still running from a previous operation.
+  if (digitalRead(LORA_BUSY_PIN)) {
+    unexpectedOverruns++;
+    if (unexpectedOverruns >= 3) {
+      Serial.println("RADIO: BUSY stuck 3 slots — forcing standby");
+      radioStandby();
+      unexpectedOverruns = 0;
+      nextActionSlotIndex = slotIndex + 1;
+      nextActionUs = syncAnchorUs + (uint32_t)((slotIndex - syncSeedSlotIndex + 1) * SLOT_DURATION_US);
+    }
+    return;
+  }
+
+  // BUSY is clear and time has come. Take the slot action.
+  unexpectedOverruns = 0;
+  nextActionSlotIndex = slotIndex + 1;
+  nextActionUs = syncAnchorUs + (uint32_t)((slotIndex - syncSeedSlotIndex + 1) * SLOT_DURATION_US);
+
   if (win == WIN_TELEM) {
     if (txSendingEnabled) {
-      uint8_t pkt[255];  // 255 to accommodate thrust curve page (up to 217 bytes at SF≤7)
+      applyFrequency(ch);
+      sx126x_mod_params_lora_t mp = buildNormalModParams();
+      uint8_t pkt[255];
       size_t len = buildTelemetryPacket(pkt);
-      radioStartTx(pkt, len);
+      sx126x_pkt_params_lora_t pp = buildNormalPktParams((uint8_t)len);
+      radioStartTx(pkt, len, mp, pp, false);
     } else {
-      // TX disabled — listen for the slot (e.g. ground test, download mode).
-      radioStartRx();
+      // TX disabled — listen on this channel (e.g. ground test mode).
+      applyFrequency(ch);
+      sx126x_mod_params_lora_t mp = buildNormalModParams();
+      uint32_t slotEndUs = syncAnchorUs + (uint32_t)((slotIndex - syncSeedSlotIndex + 1) * SLOT_DURATION_US);
+      uint32_t remainUs = (uint32_t)((long)(slotEndUs - now));
+      if (remainUs < 60'000UL) return;
+      sx126x_pkt_params_lora_t pp = buildNormalPktParams(255);
+      radioStartRxTimeout((uint32_t)(remainUs / 15.625f), mp, pp, false);
     }
+
   } else if (win == WIN_LR) {
     if (txSendingEnabled) {
+      applyFrequency(ch);
+      sx126x_mod_params_lora_t mp = buildLRModParams();
       uint8_t pkt[3];
       size_t len = buildLRPacketCore(pkt);
-      radioStartTx(pkt, len);
+      sx126x_pkt_params_lora_t pp = buildLRPktParams((uint8_t)len);
+      radioStartTx(pkt, len, mp, pp, true);
     }
-    // If TX disabled, stay standby for WIN_LR (nothing to RX from ourselves).
-  } else {
-    // WIN_CMD (and any future slot types): listen for a command.
-    radioStartRx();
+    // If TX disabled, stay standby for WIN_LR.
+
+  } else if (win == WIN_CMD) {
+    // RX for command on fixed command channel.
+    applyFrequency(activeChannel);
+    sx126x_mod_params_lora_t mp = buildNormalModParams();
+
+    // Timeout: use short window if we've heard a command recently, long window if not.
+    bool hasRecentCommand = (lastValidCmdUs != 0 &&
+                             (now - lastValidCmdUs) < ROCKET_NO_BASE_HEARD_THRESHOLD_US);
+    uint32_t timeoutUs = hasRecentCommand ? ROCKET_RX_TIMEOUT_US : ROCKET_LONG_RX_TIMEOUT_US;
+    // Cap to remaining slot time.
+    unsigned long slotEndUs = syncAnchorUs + (uint32_t)((slotIndex - syncSeedSlotIndex + 1) * SLOT_DURATION_US);
+    uint32_t remainUs = (uint32_t)((long)(slotEndUs - now));
+    if (remainUs >= timeoutUs) remainUs = timeoutUs;  // don't exceed our desired timeout
+    if (remainUs < 60'000UL) return;
+
+    sx126x_pkt_params_lora_t pp = buildNormalPktParams(255);
+    radioStartRxTimeout((uint32_t)(remainUs / 15.625f), mp, pp, false);
+
+  } else if (win == WIN_OFF) {
+    radioStandby();
   }
+  // Other WIN_ types: stay standby.
 }
 
 #endif  // ROCKET_RADIO_TEST_MODE

@@ -1,6 +1,5 @@
-// radio.h — LoRa radio hardware, TX/RX state machine, and active channel config.
-// Owns the SX1262 via sx126x_driver, all radio state, and slot-clock sync.
-// Changes to radio protocol or channel plan only touch radio.h + radio.cpp.
+// radio.h — LoRa radio hardware, TX/RX state machine, and slot-clock sync.
+// Owns the SX1262 via sx126x_driver, all radio state, and slot-clock timing.
 
 #ifndef RADIO_H
 #define RADIO_H
@@ -8,7 +7,7 @@
 #include <SPI.h>
 #include "radio_hal.h"    // sx126x_hal_context_t, dio1Fired, dio1TimestampUs()
 #include "sx126x.h"        // sx126x_driver API
-#include "config.h"
+#include "config.h"        // includes ../common/radio_config.h
 
 // ===================== RADIO STATE =====================
 
@@ -31,9 +30,8 @@ extern RadioState radioState;
 
 // ===================== ACTIVE RADIO CONFIG =====================
 // Loaded from NVS at boot, updated by CMD_SET_RADIO.
-// BW is derived from channel index (ch<64 = 125 kHz, ch>=64 = 500 kHz).
 
-extern uint8_t activeChannel;
+extern uint8_t activeChannel;  // runtime command channel (from NVM)
 extern uint8_t activeSF;
 extern int8_t  activePower;
 extern float   activeFreqMHz;
@@ -42,82 +40,66 @@ extern float   activeBwKHz;
 // ===================== SLOT CLOCK STATE =====================
 
 extern unsigned long syncAnchorUs;
-extern uint32_t      syncSlotIndex;
-extern uint32_t      lastHandledSlotNum;
-extern unsigned long lastValidCmdUs;  // Timestamp of last received valid command (for sync state)
+extern uint32_t      syncSeedSlotIndex;  // slot_index value at anchor time
+extern unsigned long lastValidCmdUs;     // timestamp of last received valid command
 
-// ===================== RSSI EMA (stub) =====================
+// ===================== MODULATION SNAPSHOT =====================
+// Saved at the start of each RX or TX operation. Used for airtime calculations.
+// Must not be inferred from current slot type — settings can change between start and done.
 
-extern double rssiEma;
+extern sx126x_mod_params_lora_t savedModParams;
+extern sx126x_pkt_params_lora_t savedPktParams;
+extern bool                      savedIsLR;  // true if saved params use implicit header
 
 // ===================== STATS =====================
 
 extern uint16_t delayedTxCount;
 extern uint16_t invalidRxCount;
 
-// ===================== CHANNEL TABLE =====================
-// Channel 0-63:  BW125, 915.2 + ch*0.2 MHz
-// Channel 64-71: BW500, 915.9 + (ch-64)*1.6 MHz
-
-static inline float channelToFreqMHz(uint8_t ch) {
-  if (ch < 64) return 915.2f + ch * 0.2f;
-  if (ch < 72) return 915.9f + (ch - 64) * 1.6f;
-  return 0.0f;
-}
-
 // ===================== PUBLIC API =====================
-
-// Check if we're currently in sync (heard a command recently).
-inline bool radioInSync() {
-  return (lastValidCmdUs != 0 && (micros() - lastValidCmdUs) < ROCKET_NO_BASE_HEARD_THRESHOLD_US);
-}
 
 // Derive activeFreqMHz and activeBwKHz from activeChannel.
 void updateActiveFreqBw();
 
-// Initialise radio hardware (SX126x reset, standby, configure modulation/packet
-// params, DIO2 RF switch, IRQ mask, MCPWM capture on DIO1).
-// Called from the INIT_LORA state in nonblockingInit().
-// Returns true on success.
+// Returns true if a valid command was received within ROCKET_NO_BASE_HEARD_THRESHOLD_US.
+inline bool radioInSync() {
+  return (lastValidCmdUs != 0 &&
+          (micros() - lastValidCmdUs) < ROCKET_NO_BASE_HEARD_THRESHOLD_US);
+}
+
+// Returns current slot index (pure calculation from anchor — no stored variable).
+inline uint32_t radioGetSlotIndex() {
+  return (uint32_t)((micros() - syncAnchorUs) / SLOT_DURATION_US) + syncSeedSlotIndex;
+}
+
+// Initialise radio hardware.
 bool radioInit();
 
 // *** BLOCKING — INIT ONLY ***
-// Apply radio parameters (frequency, SF, BW, power) from NVS or CMD_SET_RADIO.
-// Radio must be in RADIO_STANDBY. Contains DO_NOT_CALL_WHILE_ARMED_radioWaitBusy_WARNING_LONG_BLOCKING calls (up to 100ms each).
-// ONLY call from radioInit_BLOCKING() or CMD_SET_RADIO while disarmed.
+// Apply radio parameters from NVS or CMD_SET_RADIO. Radio must be in RADIO_STANDBY.
+// Contains DO_NOT_CALL_WHILE_ARMED_radioWaitBusy_WARNING_LONG_BLOCKING calls (up to 100ms each).
 void radioApplyConfig_BLOCKING();
 
-// Per-slot radio config enum. Updated at each slot boundary; applyCfgIfNeeded()
-// issues two SPI commands with up to 100µs BUSY spin between them (typical <20µs).
-// Deferred if radio is not in STANDBY (retries next loop).
-enum RadioSlotConfig : uint8_t {
-  RADIO_CFG_NORMAL = 0,
-  RADIO_CFG_LR     = 1,
-};
-
-// Start RX with the slot-appropriate timeout (short if synced + recently heard base;
-// long if pre-sync or lost-rocket fallback). See radioStartRx() in radio.cpp.
-void radioStartRx();
-
 // Start windowed RX with a timeout in raw RTC steps (15.625 µs per tick).
-void radioStartRxTimeout(uint32_t timeoutRtcSteps);
+// Saves modulation params for later airtime calc. isLR = true for implicit-header mode.
+void radioStartRxTimeout(uint32_t timeoutRtcSteps,
+                         const sx126x_mod_params_lora_t& modParams,
+                         const sx126x_pkt_params_lora_t& pktParams,
+                         bool isLR);
 
 // Start async TX. Returns true if TX started.
-bool radioStartTx(const uint8_t* pkt, size_t len);
+bool radioStartTx(const uint8_t* pkt, size_t len,
+                  const sx126x_mod_params_lora_t& modParams,
+                  const sx126x_pkt_params_lora_t& pktParams,
+                  bool isLR);
 
 // Put radio in standby.
 void radioStandby();
 
-// Set the slot clock sync point. Called from CMD_SET_SYNC handler.
-// anchorUs  = micros() at the sync event
-// slotIdx   = slot index that is current at that anchor
-void radioSetSynced(unsigned long anchorUs, uint8_t slotIdx);
-
-// Build the 3-byte on-air core for the 0xBB long-range packet (dithered lat/lon + low-batt).
-// In WIN_LR slots only the core is transmitted (implicit header). Returns 3.
+// Build the 3-byte on-air core for the 0xBB long-range packet.
 size_t buildLRPacketCore(uint8_t* buf);
 
-// Main non-blocking radio update: slot-based TX/RX scheduling or bootstrap RX.
+// Main non-blocking radio update: slot-based TX/RX scheduling.
 void nonblockingRadio();
 
 #endif // RADIO_H

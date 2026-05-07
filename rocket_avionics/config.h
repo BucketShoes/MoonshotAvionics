@@ -8,6 +8,10 @@
 // Board-specific pin assignments (switchable per -DBOARD_* build flag)
 #include "board_config.h"
 
+// Shared radio protocol constants (slot timing, slot sequence, hop sequence, channel table).
+// Must match base_station firmware exactly.
+#include "../common/radio_config.h"
+
 // ===================== PIN DEFINITIONS (shared across all boards) =====================
 
 #define LORA_NSS_PIN  8
@@ -63,27 +67,8 @@
 #define CHANNEL_COUNT 72
 
 // ===================== SLOT TIMING SYNC =====================
-// Slot-based scheduling for time-sync between rocket and base station.
-// Both sides share the same slot sequence and duration.
-// After CMD_SET_SYNC, the base anchors to TxDone of that packet; the rocket
-// anchors to RxDone. Both compute slot position from that anchor.
-
-enum WindowMode : uint8_t {
-  WIN_TELEM  = 0,  // rocket TX telemetry / base RX - using hopping channel with user-configurable telem modulation
-  WIN_CMD     = 1, // base TX commands / rocket RX - using the command channel, with command modulation params (typically same modulation as telem)
-  WIN_OFF    = 2,  // radio off — neither side active, power save
-  WIN_LR     = 3,  // long-range low-rate TX at high sf, implicit headers, etc
-  WIN_FINDME = 4,  //  long-preamble beacon for passive scan without bootstrap, on specific modulation regardless of radio settings
-  WIN_BACKHAUL = 5, //timeslot reserved for relay backhaul beween multiple bae stations - rocket stays quiet, but listens similar to a WIN_CMD but on hop channel with backhaul modulation. not valid for sending normal commands, but can help sync
-  WIN_MULTIPURPOSE = 6,//long slow cycle between various functions. full anchor timing and state machine required to know which modulation to use.
-  WIN_RDF = 7, //for radio distance/direction finding. send multiple short packets at variable signal strength and changing SF/BW for improved distance estimation
-  WIN_GFSK = 8,//high data rate, mutiple packets in succession
-};
-
-// Compile-time slot sequence. Edit here to change the pattern.
-static const WindowMode SLOT_SEQUENCE[] = { WIN_TELEM, WIN_CMD, WIN_TELEM, WIN_CMD, WIN_TELEM, WIN_CMD, WIN_TELEM, WIN_CMD, WIN_TELEM, WIN_CMD, WIN_LR, WIN_CMD, WIN_TELEM, WIN_TELEM,WIN_CMD,};
-#define SLOT_SEQUENCE_LEN   (sizeof(SLOT_SEQUENCE) / sizeof(SLOT_SEQUENCE[0]))
-#define SLOT_DURATION_US    420'000UL //how long between the timing points where messages are sent/listened for. note that this may change in futue, and some comments incorrectly assume itll always be this long.
+// WindowMode enum, SLOT_SEQUENCE, SLOT_SEQUENCE_LEN, SLOT_DURATION_US, hop sequence,
+// and channel table are all defined in ../common/radio_config.h (included above).
 
 
 // Rocket WIN_CMD RX timeouts (converted to RTC steps via /15.625 at use site).

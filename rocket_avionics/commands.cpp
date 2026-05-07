@@ -170,10 +170,11 @@ void executeCommand(uint8_t cmdId, uint32_t nonce, const uint8_t* params, size_t
 
       // Apply new config. BLOCKING — radioApplyConfig_BLOCKING() calls
       // DO_NOT_CALL_WHILE_ARMED_radioWaitBusy_WARNING_LONG_BLOCKING (up to 100ms each).
+      // Also re-derives hop sequence for new command channel.
       // TODO: @@@ refuse CMD_SET_RADIO while armed to prevent blocking the armed loop.
       radioStandby();
       radioApplyConfig_BLOCKING();
-      radioStartRx();
+      // Slot machine will resume from standby on next nonblockingRadio() call.
 
       Serial.print("Radio set: ch"); Serial.print(ch);
       Serial.print(" "); Serial.print(activeFreqMHz, 1); Serial.print("MHz SF");
@@ -208,14 +209,16 @@ void executeCommand(uint8_t cmdId, uint32_t nonce, const uint8_t* params, size_t
       break;
 
     case CMD_SET_SYNC:
-      // Anchor the slot clock to this moment (RxDone = now).
-      // slotIndex=1: the sync packet itself occupies slot 0 (WIN_TELEM from base's view),
-      // so WIN_CMD starts immediately after.
-      Serial.print("=======SYNC-====== dio1CaptureVal=");
-      Serial.print(dio1CaptureVal);
-      Serial.print("; micros()=");
-      Serial.println(micros());
-      radioSetSynced(dio1CaptureVal, 1); //TODO: wtf this shouldnt be micros() here - it should be captured eexactly at the point it comes in. check       dio1CaptureVal. although it should only be a matter of fraction of a millisecond
+      // Anchor the slot clock to the DIO1 timestamp of this RxDone.
+      // slotIndex=1: the sync packet is in WIN_CMD (slot index 1 in the old sequence — now
+      // CMD_SET_SYNC is being removed in favour of passive sync, but kept for compat).
+      Serial.print("SYNC: anchor="); Serial.print(dio1CaptureVal);
+      Serial.print(" slotIdx=1");
+      Serial.print(" micros="); Serial.println(micros());
+      syncAnchorUs      = (unsigned long)dio1CaptureVal;
+      syncSeedSlotIndex = 1;
+      lastValidCmdUs    = (unsigned long)micros();
+      dio1Fired         = false;
       result = CMD_OK;
       break;
 

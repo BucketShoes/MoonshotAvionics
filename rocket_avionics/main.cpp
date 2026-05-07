@@ -224,12 +224,11 @@ void nonblockingInit() {
       Serial.print("TX rate: "); Serial.print(activeTxRate);
       Serial.print(" -> "); Serial.print(txIntervalUs); Serial.println("us interval");
 
-      // Enable radio
+      // Enable radio — slot machine starts on next nonblockingRadio() call.
       txSendingEnabled = true;
       if (loraReady) {
-        radioStartRx();
         ledcWrite(LED_PIN, 64);
-        Serial.println("Radio enabled — bootstrap RX, waiting for sync");
+        Serial.println("Radio enabled — slot machine starting");
       } else {
         Serial.println("Radio FAILED — no LoRa");
       }
