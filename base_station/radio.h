@@ -38,8 +38,8 @@
 // Local debug switches — may differ between rocket and base.
 
 #define LOG_RX_DONE    true
-#define LOG_RX_TIMEOUT false
-#define LOG_RX_START   false
+#define LOG_RX_TIMEOUT true
+#define LOG_RX_START   true
 #define LOG_TX_START   true
 #define LOG_TX_DONE    true
 

@@ -32,7 +32,7 @@ uint8_t activeChannel = DEFAULT_CHANNEL;
 uint8_t activeSF      = DEFAULT_SF;
 int8_t  activePower   = DEFAULT_POWER;
 float   activeFreqMHz = 917.5f;
-float   activeBwKHz   = 500.0f;
+float   activeBwKHz   = 125.0f;
 
 // ===================== HOP SEQUENCE =====================
 

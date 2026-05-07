@@ -38,11 +38,11 @@
 // These are local debug switches; the two firmwares can choose independently.
 
 #define LOG_RX_DONE     true
-#define LOG_RX_TIMEOUT  false
-#define LOG_RX_START    false
+#define LOG_RX_TIMEOUT  true
+#define LOG_RX_START    true
 #define LOG_TX_START    true
 #define LOG_TX_DONE     true
-#define LOG_APPLYCFG    false
+#define LOG_APPLYCFG    true
 
 // ===================== SLOT CONFIG STRUCT =====================
 // Per-slot radio parameters. Currently all slots use the same config.
