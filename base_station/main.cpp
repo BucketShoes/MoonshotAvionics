@@ -350,7 +350,7 @@ void pushToAllTransports(const uint8_t* wsBuf, size_t wsLen) {
 // Invoked from radio.cpp bsHandleRxDone() for every valid received packet.
 
 void bsOnPacketReceived(const uint8_t* buf, size_t len, float snrF, float rssiF,
-                        uint32_t slotIndex, uint8_t seqIdx, uint8_t win,
+                        int64_t slotIndex, uint8_t seqIdx, uint8_t win,
                         uint32_t timeOnAirMs, float driftEmaUs) {
   int8_t snr4 = (int8_t)(snrF * 4);
   uint32_t nowMs = millis();

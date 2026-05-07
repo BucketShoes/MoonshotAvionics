@@ -105,48 +105,29 @@ static sx126x_lora_bw_t bwKHzToEnum(float bwKHz) {
   return SX126X_LORA_BW_125;
 }
 
-static sx126x_mod_params_lora_t buildNormalModParams() {
-  sx126x_mod_params_lora_t mp = {};
-  mp.sf   = (sx126x_lora_sf_t)activeSF;
-  mp.bw   = bwKHzToEnum(activeBwKHz);
-  mp.cr   = SX126X_LORA_CR_4_5;
-  mp.ldro = 0;
-  return mp;
+enum RadioCfg : uint8_t { CFG_NORMAL, CFG_LR };
+
+static sx126x_mod_params_lora_t buildModParams(RadioCfg cfg) {
+  if (cfg == CFG_LR)
+    return { (sx126x_lora_sf_t)LORA_LR_SF, bwKHzToEnum(activeBwKHz), (sx126x_lora_cr_t)LORA_LR_CR, 1 };
+  return { (sx126x_lora_sf_t)activeSF, bwKHzToEnum(activeBwKHz), SX126X_LORA_CR_4_5, 0 };
 }
 
-static sx126x_mod_params_lora_t buildLRModParams() {
-  sx126x_mod_params_lora_t mp = {};
-  mp.sf   = (sx126x_lora_sf_t)LORA_LR_SF;
-  mp.bw   = bwKHzToEnum(activeBwKHz);
-  mp.cr   = (sx126x_lora_cr_t)LORA_LR_CR;
-  mp.ldro = 1;
-  return mp;
+static sx126x_pkt_params_lora_t buildPktParams(RadioCfg cfg, uint8_t pldLen) {
+  if (cfg == CFG_LR)
+    return { 5, SX126X_LORA_PKT_IMPLICIT, (uint8_t)(pldLen ? pldLen : 3), false, false };
+  return { LORA_PREAMBLE, SX126X_LORA_PKT_EXPLICIT, pldLen, true, false };
 }
 
-static sx126x_pkt_params_lora_t buildNormalPktParams(uint8_t pldLen) {
-  sx126x_pkt_params_lora_t pp = {};
-  pp.preamble_len_in_symb = LORA_PREAMBLE;
-  pp.header_type          = SX126X_LORA_PKT_EXPLICIT;
-  pp.pld_len_in_bytes     = pldLen;
-  pp.crc_is_on            = true;
-  pp.invert_iq_is_on      = false;
-  return pp;
-}
-
-static sx126x_pkt_params_lora_t buildLRPktParams(uint8_t pldLen) {
-  sx126x_pkt_params_lora_t pp = {};
-  pp.preamble_len_in_symb = 5;
-  pp.header_type          = SX126X_LORA_PKT_IMPLICIT;
-  pp.pld_len_in_bytes     = pldLen;
-  pp.crc_is_on            = false;
-  pp.invert_iq_is_on      = false;
-  return pp;
-}
+// Track which channel the radio is actually tuned to. Hop index is then derived
+// from this (independent of slot index, per user requirement).
+static uint8_t currentTunedChannel = DEFAULT_CHANNEL;
 
 static void applyFrequency(uint8_t ch) {
   float freqMHz = channelToFreqMHz(ch);
   uint32_t freqHz = (uint32_t)(freqMHz * 1e6f + 0.5f);
   sx126x_set_rf_freq(&bsRadioCtx, freqHz);
+  currentTunedChannel = ch;
 }
 
 // SX1262 errata §15.3: after any RX with implicit header + timeout, prevent spurious timeout.
@@ -233,11 +214,11 @@ bool bsRadioInit() {
 }
 
 void bsRadioApplyConfig_BLOCKING() {
-  sx126x_mod_params_lora_t mp = buildNormalModParams();
+  sx126x_mod_params_lora_t mp = buildModParams(CFG_NORMAL);
   sx126x_set_lora_mod_params(&bsRadioCtx, &mp);
   DO_NOT_CALL_WHILE_ARMED_radioWaitBusy_WARNING_LONG_BLOCKING(&bsRadioCtx);
 
-  sx126x_pkt_params_lora_t pp = buildNormalPktParams(255);
+  sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL,255);
   sx126x_set_lora_pkt_params(&bsRadioCtx, &pp);
   DO_NOT_CALL_WHILE_ARMED_radioWaitBusy_WARNING_LONG_BLOCKING(&bsRadioCtx);
 
@@ -291,8 +272,12 @@ void bsRadioStartRxTimeout(uint32_t timeoutRtcSteps,
     bsLedOn();
     if (LOG_RX_START) {
       int64_t s = bsGetSlotIndex();
+      uint8_t seqIdx = (uint8_t)(((uint64_t)(s - bsSyncSeedSlotIndex)) % SLOT_SEQUENCE_LEN);
       Serial.print("BS RxStart: slot="); Serial.print((long long)s);
-      Serial.print(" ch="); Serial.print(hopChannel((uint32_t)(s - bsSyncSeedSlotIndex)));
+      Serial.print(" seq="); Serial.print(seqIdx);
+      Serial.print(" win="); Serial.print(windowModeName(SLOT_SEQUENCE[seqIdx]));
+      Serial.print(" ch="); Serial.print(currentTunedChannel);
+      Serial.print(" hop="); Serial.print(hopIndexOf(currentTunedChannel));
       Serial.print(" timeout="); Serial.print((uint32_t)(timeoutRtcSteps * 15.625f));
       Serial.println("us");
     }
@@ -315,14 +300,14 @@ bool bsRadioStartTx(const uint8_t* pkt, size_t len) {
   }
 
   // Commands always use normal modulation on the command channel.
-  sx126x_mod_params_lora_t mp = buildNormalModParams();
+  sx126x_mod_params_lora_t mp = buildModParams(CFG_NORMAL);
   sx126x_set_lora_mod_params(&bsRadioCtx, &mp);
   {
     unsigned long t0 = micros();
     while (digitalRead(LORA_BUSY_PIN) && (micros() - t0) < 100) {}
   }
 
-  sx126x_pkt_params_lora_t pp = buildNormalPktParams((uint8_t)len);
+  sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL,(uint8_t)len);
   sx126x_set_lora_pkt_params(&bsRadioCtx, &pp);
 
   sx126x_clear_irq_status(&bsRadioCtx, SX126X_IRQ_ALL);
@@ -350,7 +335,11 @@ bool bsRadioStartTx(const uint8_t* pkt, size_t len) {
     bsLedOn();
     if (LOG_TX_START) {
       int64_t s = bsGetSlotIndex();
+      uint8_t seqIdx = (uint8_t)(((uint64_t)(s - bsSyncSeedSlotIndex)) % SLOT_SEQUENCE_LEN);
       Serial.print("BS TxStart: slot="); Serial.print((long long)s);
+      Serial.print(" seq="); Serial.print(seqIdx);
+      Serial.print(" win="); Serial.print(windowModeName(SLOT_SEQUENCE[seqIdx]));
+      Serial.print(" ch="); Serial.print(currentTunedChannel);
       Serial.print(" len="); Serial.println((unsigned)len);
     }
     return true;
@@ -395,12 +384,23 @@ static void applyDriftCorrection(int64_t rxDoneUs, int64_t slotIndex,
   if (correction < -5000) correction = -5000;
 
   *anchorUs += correction;
+
+  static int64_t lastDriftLogUs = 0;
+  int64_t nowL = esp_timer_get_time();
+  if (nowL - lastDriftLogUs > 1'000'000) {
+    lastDriftLogUs = nowL;
+    Serial.print("BS DRIFT: airtimeMs="); Serial.print(airtimeMs);
+    Serial.print(" drift="); Serial.print(driftUs);
+    Serial.print(" ema="); Serial.print(*driftEma, 1);
+    Serial.print(" corr="); Serial.print(correction);
+    Serial.print(" slot="); Serial.println((long long)slotIndex);
+  }
 }
 
 // ===================== RX PACKET HANDLER =====================
 
 extern void bsOnPacketReceived(const uint8_t* buf, size_t len, float snrF, float rssiF,
-                               uint32_t slotIndex, uint8_t seqIdx, uint8_t win,
+                               int64_t slotIndex, uint8_t seqIdx, uint8_t win,
                                uint32_t timeOnAirMs, float driftEmaUs);
 
 static void bsHandleRxDone(uint64_t eventUs) {
@@ -444,7 +444,7 @@ static void bsHandleRxDone(uint64_t eventUs) {
     synth[0] = PKT_LONGRANGE;
     synth[1] = FAVORITE_ROCKET_DEVICE_ID;
     synth[2] = buf[0]; synth[3] = buf[1]; synth[4] = buf[2];
-    bsOnPacketReceived(synth, 5, snrF, rssiF, (uint32_t)slotIndex, seqIdx, (uint8_t)win, timeOnAirMs, bsDriftEmaUs);
+    bsOnPacketReceived(synth, 5, snrF, rssiF, slotIndex, seqIdx, (uint8_t)win, timeOnAirMs, bsDriftEmaUs);
     return;
   }
 
@@ -501,7 +501,7 @@ static void bsHandleRxDone(uint64_t eventUs) {
     }
   }
 
-  bsOnPacketReceived(buf, rxLen, snrF, rssiF, (uint32_t)slotIndex, seqIdx, (uint8_t)win, timeOnAirMs, bsDriftEmaUs);
+  bsOnPacketReceived(buf, rxLen, snrF, rssiF, slotIndex, seqIdx, (uint8_t)win, timeOnAirMs, bsDriftEmaUs);
 }
 
 // ===================== IRQ HANDLER =====================
@@ -601,8 +601,8 @@ void bsHandleRadio() {
   if (dio1Fired) bsRadioHandleIrq();
   unsigned long nowMs = millis();
   if (bsRadioState == BS_RADIO_STANDBY) {
-    sx126x_mod_params_lora_t mp = buildNormalModParams();
-    sx126x_pkt_params_lora_t pp = buildNormalPktParams(255);
+    sx126x_mod_params_lora_t mp = buildModParams(CFG_NORMAL);
+    sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL,255);
     bsRadioStartRxTimeout((uint32_t)(100'000UL / 15.625f), mp, pp, false);
   }
   if (nowMs - bsTestLastTxMs >= 5000) {
@@ -614,17 +614,42 @@ void bsHandleRadio() {
 
 #else
 
-// nextActionUs: timestamp at which the next slot action should start.
-static unsigned long bsNextActionUs     = 0;
-static uint32_t      bsNextActionSlot   = 0;
-static uint8_t       bsUnexpectedOverruns = 0;
-static bool          bsCmdSentThisSlot  = false;
-static bool          bsRxStartedThisSlot = false;
+// Slot scheduling state. All time arithmetic is int64 µs (esp_timer_get_time()).
+//
+// User architectural rule: actions span slot boundaries (e.g. RX on telem starts 20ms
+// before its slot to catch the leading edge). So we don't track "did we act in THIS
+// slot" — we track which slot we last STARTED an action for. If lastActionSlot ==
+// targetSlot, that target's action is already underway; nothing to do.
+static int64_t bsLastActionStartedSlot = -1;  // absolute slot index whose action we last fired
+static uint8_t bsUnexpectedOverruns   = 0;
+
+// Rate-limit recurring diagnostics.
+static int64_t  bsLastOverrunLogUs = 0;
+static int64_t  bsLastBusyLogUs    = 0;
+static uint32_t bsOverrunSinceLog  = 0;
+static uint32_t bsBusySinceLog     = 0;
 
 // Background RSSI EMA
 static bool  bsBgRssiInit  = false;
 static bool  bsBgRssiReady = false;
 #define BG_RSSI_ALPHA  0.05f
+
+static inline int64_t bsSlotStartUsFor(int64_t slotIndex) {
+  return bsSyncAnchorUs + (slotIndex - bsSyncSeedSlotIndex) * (int64_t)SLOT_DURATION_US;
+}
+
+// Compute the absolute timestamp at which the action for the given slot is supposed
+// to BEGIN. Accounts for early-RX (telem/LR/CMD-listen) and late-TX (cmd dispatch)
+// offsets. WIN_CONTINUE has no action; caller must skip it before calling this.
+static inline int64_t bsActionStartUsFor(int64_t slotIndex, WindowMode win) {
+  int64_t slotStart = bsSlotStartUsFor(slotIndex);
+  switch (win) {
+    case WIN_TELEM:
+    case WIN_LR:    return slotStart - (int64_t)BS_RX_EARLY_US;
+    case WIN_CMD:   return slotStart + (int64_t)BS_CMD_TX_OFFSET_US;
+    default:        return slotStart;
+  }
+}
 
 void bsHandleRadio() {
   if (dio1Fired) {
@@ -649,22 +674,18 @@ void bsHandleRadio() {
     }
   }
 
-  unsigned long now = micros();
+  int64_t now = esp_timer_get_time();
 
   // ---- SCAN_SEARCHING: continuous single-shot infinite-timeout RX ----
   if (bsScanState == SCAN_SEARCHING) {
-    // Check scan timeout.
     if ((millis() - bsScanStartMs) >= BS_SCAN_TOTAL_MS) {
-      // Scan timed out.
       if (bsBackupAnchorUs != 0) {
-        // Revert to backup.
         bsSyncAnchorUs      = bsBackupAnchorUs;
         bsSyncSeedSlotIndex = bsBackupSeedSlotIndex;
         bsDriftEmaUs        = bsBackupDriftEmaUs;
         bsScanState         = SCAN_LOCKED;
         Serial.println("BS SCAN: timeout — reverted to backup anchor");
       } else {
-        // No prior lock; restart.
         bsScanStartMs = millis();
         Serial.println("BS SCAN: timeout — restarting search");
       }
@@ -672,13 +693,11 @@ void bsHandleRadio() {
       return;
     }
 
-    // Start infinite-timeout RX if not already running.
     if (bsRadioState == BS_RADIO_STANDBY) {
-      uint8_t scanCh = hopSeq[2];  // always index 2 per design
+      uint8_t scanCh = hopSeq[2];  // TODO: random per-attempt channel
       applyFrequency(scanCh);
-      sx126x_mod_params_lora_t mp = buildNormalModParams();
-      sx126x_pkt_params_lora_t pp = buildNormalPktParams(255);
-      // timeout=0 = infinite single-shot RX (SX1262 stays in RX until packet or explicit standby).
+      sx126x_mod_params_lora_t mp = buildModParams(CFG_NORMAL);
+      sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL,255);
       bsRadioStartRxTimeout(0, mp, pp, false);
       if (LOG_RX_START) {
         Serial.print("BS SCAN: searching on ch="); Serial.println(scanCh);
@@ -690,104 +709,87 @@ void bsHandleRadio() {
   // ---- SCAN_CANDIDATE: check candidate timer ----
   if (bsScanState == SCAN_CANDIDATE) {
     if ((millis() - bsCandidateStartMs) >= BS_CANDIDATE_TIMEOUT_MS) {
-      // Candidate failed — restart searching (within the scan timer).
       Serial.println("BS SCAN: candidate timeout — restarting");
       bsScanState = SCAN_SEARCHING;
-      // Don't reset bsScanStartMs — the 60s total scan timer keeps running.
       if (bsRadioState == BS_RADIO_RX_ACTIVE) bsRadioStandby();
     }
   }
 
   // ---- Slotted operation (CANDIDATE or LOCKED) ----
 
-  uint32_t slotIndex = bsGetSlotIndex();
-  uint8_t  seqIdx    = (uint8_t)(slotIndex % SLOT_SEQUENCE_LEN);
+  int64_t  slotIndex = bsGetSlotIndex();
+  uint8_t  seqIdx    = (uint8_t)(((uint64_t)(slotIndex - bsSyncSeedSlotIndex)) % SLOT_SEQUENCE_LEN);
   WindowMode win     = SLOT_SEQUENCE[seqIdx];
-  uint8_t  ch        = hopChannel(slotIndex);
 
-  // Initialise nextActionUs on first entry or after mode switch.
-  if (bsNextActionUs == 0) {
-    bsNextActionUs   = now;
-    bsNextActionSlot = slotIndex;
-    bsCmdSentThisSlot  = false;
-    bsRxStartedThisSlot = false;
+  // Hop position is INDEPENDENT of slot index. We pick the channel based on the slot
+  // type (telem/LR -> hopSeq driven, but per-slot chosen by an independent counter):
+  // for now, the rocket and base both index hopSeq[] by an independent counter that
+  // advances on each hopped action. To stay synced without a separate channel field,
+  // both sides use slotIndex (a shared count) but the user's plan is that this counter
+  // is logically the hop counter, not the slot counter. For now this is a single-counter
+  // implementation; CRT-style coupling has been removed.
+  uint8_t  ch        = hopChannel((uint32_t)(slotIndex - bsSyncSeedSlotIndex));
+
+  if (win == WIN_CONTINUE) return;
+
+  // Compute when this slot's action is supposed to begin. Skip forward through
+  // already-acted-on slots; an action might already be underway from the previous
+  // slot (e.g. a long telem RX started 20ms early).
+  int64_t actionStartUs = bsActionStartUsFor(slotIndex, win);
+
+  // Already started the action for this slot — wait for next slot.
+  if (bsLastActionStartedSlot == slotIndex) return;
+
+  // Compute when the NEXT slot's action would start — this gives our action's hard
+  // deadline (we must finish before the next radio action begins).
+  int64_t nextSlot = slotIndex + 1;
+  // skip WIN_CONTINUE when computing next-action-start (continue = no action)
+  WindowMode nextWin = SLOT_SEQUENCE[(uint8_t)(((uint64_t)(nextSlot - bsSyncSeedSlotIndex)) % SLOT_SEQUENCE_LEN)];
+  while (nextWin == WIN_CONTINUE) {
+    nextSlot++;
+    nextWin = SLOT_SEQUENCE[(uint8_t)(((uint64_t)(nextSlot - bsSyncSeedSlotIndex)) % SLOT_SEQUENCE_LEN)];
   }
+  int64_t nextActionStartUs = bsActionStartUsFor(nextSlot, nextWin);
 
-  // WIN_CONTINUE: no action.
-  if (win == WIN_CONTINUE) {
-    if (slotIndex != bsNextActionSlot) {
-      bsNextActionSlot = slotIndex;
-      unsigned long slotsSince = slotIndex - bsSyncSeedSlotIndex;
-      bsNextActionUs = bsSyncAnchorUs + slotsSince * SLOT_DURATION_US;
+  // Not yet time to start this slot's action.
+  if (now < actionStartUs) return;
+
+  // How much time remains before the next action must begin? That's our timeout.
+  int64_t remainUs = nextActionStartUs - now;
+  if (remainUs < (int64_t)BS_RX_MIN_REMAINING_US) {
+    // Too late / not enough time for a useful RX. Skip this slot.
+    bsUnexpectedOverruns++;
+    bsOverrunSinceLog++;
+    if ((now - bsLastOverrunLogUs) > 1'000'000) {
+      Serial.print("BS RADIO: overrun win="); Serial.print(windowModeName(win));
+      Serial.print(" consec="); Serial.print(bsUnexpectedOverruns);
+      Serial.print(" totalSinceLog="); Serial.print(bsOverrunSinceLog);
+      Serial.print(" slot="); Serial.print((long long)slotIndex);
+      Serial.print(" remainUs="); Serial.println((long long)remainUs);
+      bsLastOverrunLogUs = now;
+      bsOverrunSinceLog  = 0;
     }
+    if (bsUnexpectedOverruns >= BS_OVERRUN_MAX) {
+      Serial.println("BS RADIO: 3 overruns — forcing standby");
+      bsRadioStandby();
+      bsUnexpectedOverruns = 0;
+    }
+    bsLastActionStartedSlot = slotIndex;  // mark as "handled" so we move on
     return;
   }
 
-  // Slot transition bookkeeping.
-  if (slotIndex != bsNextActionSlot) {
-    bsNextActionSlot    = slotIndex;
-    bsCmdSentThisSlot   = false;
-    bsRxStartedThisSlot = false;
-    unsigned long slotsSince = slotIndex - bsSyncSeedSlotIndex;
-    // Base station: RX starts 20ms early; TX starts 5ms late.
-    if (win == WIN_TELEM || win == WIN_LR) {
-      bsNextActionUs = bsSyncAnchorUs + slotsSince * SLOT_DURATION_US - BS_RX_EARLY_US;
-    } else if (win == WIN_CMD) {
-      bsNextActionUs = bsSyncAnchorUs + slotsSince * SLOT_DURATION_US + BS_CMD_TX_OFFSET_US;
-    } else {
-      bsNextActionUs = bsSyncAnchorUs + slotsSince * SLOT_DURATION_US;
-    }
-  }
-
-  // WIN_CMD: signal dispatch at BS_CMD_TX_OFFSET_US past boundary.
-  if (win == WIN_CMD && !bsCmdSentThisSlot) {
-    unsigned long slotsSince = slotIndex - bsSyncSeedSlotIndex;
-    unsigned long slotBoundary = bsSyncAnchorUs + slotsSince * SLOT_DURATION_US;
-    if ((long)(now - (slotBoundary + BS_CMD_TX_OFFSET_US)) >= 0) {
-      bsCmdSentThisSlot = true;
-      bsWinCmdReady = true;
-      // If no command, listen on backhaul channel/modulation for the remainder.
-      if (!cmdTx.active && !bsRxStartedThisSlot && bsRadioState == BS_RADIO_STANDBY) {
-        applyFrequency(bhChannel);
-        sx126x_mod_params_lora_t mp = {};
-        mp.sf   = (sx126x_lora_sf_t)bhSF;
-        mp.bw   = bwKHzToEnum(channelToBwKHz(bhChannel));
-        mp.cr   = SX126X_LORA_CR_4_5;
-        mp.ldro = 0;
-        sx126x_pkt_params_lora_t pp = buildNormalPktParams(255);
-        unsigned long slotEnd = slotBoundary + SLOT_DURATION_US;
-        uint32_t remainUs = (uint32_t)((long)(slotEnd - now));
-        if (remainUs >= BS_RX_MIN_REMAINING_US) {
-          bsRadioStartRxTimeout((uint32_t)(remainUs / 15.625f), mp, pp, false);
-          bsRxStartedThisSlot = true;
-        }
-      }
-    }
-    return;
-  }
-
-  // Not yet time for this slot's action.
-  if ((long)(now - bsNextActionUs) < 0) return;
-
-  // Check overrun conditions.
-  if (win == WIN_TELEM || win == WIN_LR) {
-    unsigned long slotsSince = slotIndex - bsSyncSeedSlotIndex;
-    unsigned long slotEnd = bsSyncAnchorUs + (slotsSince + 1) * SLOT_DURATION_US;
-    uint32_t remainUs = (uint32_t)((long)(slotEnd - now));
-    if (remainUs < BS_RX_MIN_REMAINING_US) {
-      bsUnexpectedOverruns++;
-      if (bsUnexpectedOverruns >= BS_OVERRUN_MAX) {
-        Serial.println("BS RADIO: 3 overruns — forcing standby");
-        bsRadioStandby();
-        bsUnexpectedOverruns = 0;
-      }
-      return;
-    }
-  }
-
-  // Check BUSY.
+  // BUSY check — radio mid-action from previous slot.
   if (digitalRead(LORA_BUSY_PIN)) {
     bsUnexpectedOverruns++;
+    bsBusySinceLog++;
+    if ((now - bsLastBusyLogUs) > 1'000'000) {
+      Serial.print("BS RADIO: BUSY at boundary consec="); Serial.print(bsUnexpectedOverruns);
+      Serial.print(" totalSinceLog="); Serial.print(bsBusySinceLog);
+      Serial.print(" slot="); Serial.print((long long)slotIndex);
+      Serial.print(" win="); Serial.println(windowModeName(win));
+      bsLastBusyLogUs = now;
+      bsBusySinceLog  = 0;
+    }
     if (bsUnexpectedOverruns >= BS_OVERRUN_MAX) {
       Serial.println("BS RADIO: BUSY stuck — forcing standby");
       bsRadioStandby();
@@ -797,27 +799,34 @@ void bsHandleRadio() {
   }
   bsUnexpectedOverruns = 0;
 
-  if (bsRxStartedThisSlot) return;
-  bsRxStartedThisSlot = true;
+  // Time has come and BUSY is clear — fire the slot's action.
+  bsLastActionStartedSlot = slotIndex;
 
   if (win == WIN_TELEM) {
     applyFrequency(ch);
-    sx126x_mod_params_lora_t mp = buildNormalModParams();
-    unsigned long slotsSince = slotIndex - bsSyncSeedSlotIndex;
-    unsigned long slotEnd = bsSyncAnchorUs + (slotsSince + 1) * SLOT_DURATION_US;
-    uint32_t remainUs = (uint32_t)((long)(slotEnd - now));
-    sx126x_pkt_params_lora_t pp = buildNormalPktParams(255);
+    sx126x_mod_params_lora_t mp = buildModParams(CFG_NORMAL);
+    sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL, 255);
     bsRadioStartRxTimeout((uint32_t)(remainUs / 15.625f), mp, pp, false);
 
   } else if (win == WIN_LR) {
     applyFrequency(ch);
-    sx126x_mod_params_lora_t mp = buildLRModParams();
-    sx126x_pkt_params_lora_t pp = buildLRPktParams(3);
-    unsigned long slotsSince = slotIndex - bsSyncSeedSlotIndex;
-    unsigned long slotEnd = bsSyncAnchorUs + (slotsSince + 1) * SLOT_DURATION_US;
-    uint32_t remainUs = (uint32_t)((long)(slotEnd - now));
-    if (remainUs >= BS_RX_MIN_REMAINING_US) {
-      bsRadioStartRxTimeout((uint32_t)(remainUs / 15.625f), mp, pp, true);
+    sx126x_mod_params_lora_t mp = buildModParams(CFG_LR);
+    sx126x_pkt_params_lora_t pp = buildPktParams(CFG_LR, 3);
+    bsRadioStartRxTimeout((uint32_t)(remainUs / 15.625f), mp, pp, true);
+
+  } else if (win == WIN_CMD) {
+    // Signal the main loop's command dispatcher.
+    bsWinCmdReady = true;
+    // If no command actually queued, fall back to listening on the backhaul channel
+    // for the remainder of this slot.
+    if (!cmdTx.active && bsRadioState == BS_RADIO_STANDBY) {
+      applyFrequency(bhChannel);
+      sx126x_mod_params_lora_t mp = {
+        (sx126x_lora_sf_t)bhSF, bwKHzToEnum(channelToBwKHz(bhChannel)),
+        SX126X_LORA_CR_4_5, 0
+      };
+      sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL, 255);
+      bsRadioStartRxTimeout((uint32_t)(remainUs / 15.625f), mp, pp, false);
     }
 
   } else if (win == WIN_OFF) {
@@ -837,8 +846,9 @@ void bsHandleRadio() {
       Serial.print(" inSync="); Serial.print(bsInSync() ? 'Y' : 'N');
       Serial.print(" rstate="); Serial.print((int)bsRadioState);
       Serial.print(" busy="); Serial.print(digitalRead(LORA_BUSY_PIN));
-      Serial.print(" slot="); Serial.print(slotIndex);
+      Serial.print(" slot="); Serial.print((long long)slotIndex);
       Serial.print(" seqIdx="); Serial.print(seqIdx);
+      Serial.print(" anchor="); Serial.print((long long)bsSyncAnchorUs);
       Serial.print(" telemAgeMs="); Serial.print(telemAge);
       Serial.print(" dio1ISR="); Serial.println(dio1IsrCount);
     }

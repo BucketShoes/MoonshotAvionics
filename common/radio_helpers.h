@@ -57,6 +57,29 @@ inline uint8_t hopChannel(uint32_t slotIndex) {
   return hopSeq[slotIndex % NUM_HOP_CHANNELS];
 }
 
+// Find which hop position the currently-tuned channel sits at. Returns 0xFF if not found
+// (e.g. command channel, backhaul channel — anything not in hopSeq[]).
+inline uint8_t hopIndexOf(uint8_t channel) {
+  for (uint8_t i = 0; i < NUM_HOP_CHANNELS; i++) {
+    if (hopSeq[i] == channel) return i;
+  }
+  return 0xFF;
+}
+
+// Returns a string describing a WindowMode for logging.
+inline const char* windowModeName(uint8_t win) {
+  switch (win) {
+    case 0:  return "TELEM";
+    case 1:  return "CMD";
+    case 2:  return "OFF";
+    case 3:  return "LR";
+    case 4:  return "FINDME";
+    case 5:  return "BACKHAUL";
+    case 9:  return "CONTINUE";
+    default: return "?";
+  }
+}
+
 // ===================== TX RATE ENCODING =====================
 // Positive = Hz, negative = seconds-between-packets, 0 = disabled. +1 and -1 both = 1Hz.
 

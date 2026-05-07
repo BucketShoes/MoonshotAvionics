@@ -11,7 +11,7 @@
 
 // ===================== SLOT TIMING =====================
 
-#define SLOT_DURATION_US  250'000UL
+#define SLOT_DURATION_US  250'000UL/*TEMPORARY FOR DEBUGGING X4*/ *1UL
 
 // ===================== SLOT TYPES =====================
 // Values are fixed wire constants — do not renumber.

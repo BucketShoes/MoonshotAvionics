@@ -140,7 +140,7 @@ void bsHandleRadio();
 size_t bsBuildPingCmdPacket(uint8_t *buf);
 
 void bsOnPacketReceived(const uint8_t* buf, size_t len, float snrF, float rssiF,
-                        uint32_t slotIndex, uint8_t seqIdx, uint8_t win,
+                        int64_t slotIndex, uint8_t seqIdx, uint8_t win,
                         uint32_t timeOnAirMs, float driftEmaUs);
 
 #endif // BS_RADIO_H

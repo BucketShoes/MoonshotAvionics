@@ -73,53 +73,30 @@ static sx126x_lora_bw_t bwKHzToEnum(float bwKHz) {
   return SX126X_LORA_BW_125;
 }
 
-// Build modulation params for normal telem/cmd slots using current runtime config.
-static sx126x_mod_params_lora_t buildNormalModParams() {
-  sx126x_mod_params_lora_t mp = {};
-  mp.sf   = (sx126x_lora_sf_t)activeSF;
-  mp.bw   = bwKHzToEnum(activeBwKHz);
-  mp.cr   = SX126X_LORA_CR_4_5;
-  mp.ldro = 0;
-  return mp;
+enum RadioCfg : uint8_t { CFG_NORMAL, CFG_LR };
+
+static sx126x_mod_params_lora_t buildModParams(RadioCfg cfg) {
+  if (cfg == CFG_LR)
+    return { (sx126x_lora_sf_t)LORA_LR_SF, bwKHzToEnum(activeBwKHz), (sx126x_lora_cr_t)LORA_LR_CR, 1 };
+  return { (sx126x_lora_sf_t)activeSF, bwKHzToEnum(activeBwKHz), SX126X_LORA_CR_4_5, 0 };
 }
 
-// Build modulation params for WIN_LR slots.
-static sx126x_mod_params_lora_t buildLRModParams() {
-  sx126x_mod_params_lora_t mp = {};
-  mp.sf   = (sx126x_lora_sf_t)LORA_LR_SF;
-  mp.bw   = bwKHzToEnum(activeBwKHz);
-  mp.cr   = (sx126x_lora_cr_t)LORA_LR_CR;
-  mp.ldro = 1;
-  return mp;
+static sx126x_pkt_params_lora_t buildPktParams(RadioCfg cfg, uint8_t pldLen) {
+  if (cfg == CFG_LR)
+    return { 5, SX126X_LORA_PKT_IMPLICIT, (uint8_t)(pldLen ? pldLen : 3), false, false };
+  return { LORA_PREAMBLE, SX126X_LORA_PKT_EXPLICIT, pldLen, true, false };
 }
 
-// Build packet params for normal (explicit header, CRC on) TX with given payload length.
-static sx126x_pkt_params_lora_t buildNormalPktParams(uint8_t pldLen) {
-  sx126x_pkt_params_lora_t pp = {};
-  pp.preamble_len_in_symb = LORA_PREAMBLE;
-  pp.header_type          = SX126X_LORA_PKT_EXPLICIT;
-  pp.pld_len_in_bytes     = pldLen;
-  pp.crc_is_on            = true;
-  pp.invert_iq_is_on      = false;
-  return pp;
-}
-
-// Build packet params for WIN_LR TX (implicit header, CRC off, short preamble).
-static sx126x_pkt_params_lora_t buildLRPktParams(uint8_t pldLen) {
-  sx126x_pkt_params_lora_t pp = {};
-  pp.preamble_len_in_symb = 5;
-  pp.header_type          = SX126X_LORA_PKT_IMPLICIT;
-  pp.pld_len_in_bytes     = pldLen;
-  pp.crc_is_on            = false;
-  pp.invert_iq_is_on      = false;
-  return pp;
-}
+// Track which channel the radio is actually tuned to, so hop-position can be
+// derived independently of slotIndex (user requirement: hop and slot are independent).
+static uint8_t currentTunedChannel = DEFAULT_CHANNEL;
 
 // Set radio frequency from channel index. Radio must be in standby.
 static void applyFrequency(uint8_t ch) {
   float freqMHz = channelToFreqMHz(ch);
   uint32_t freqHz = (uint32_t)(freqMHz * 1e6f + 0.5f);
   sx126x_set_rf_freq(&radioCtx, freqHz);
+  currentTunedChannel = ch;
 }
 
 // SX1262 errata §15.3: after any RX with implicit header + timeout, stop the RTC timer
@@ -202,11 +179,11 @@ bool radioInit() {
 }
 
 void radioApplyConfig_BLOCKING() {
-  sx126x_mod_params_lora_t mp = buildNormalModParams();
+  sx126x_mod_params_lora_t mp = buildModParams(CFG_NORMAL);
   sx126x_set_lora_mod_params(&radioCtx, &mp);
   DO_NOT_CALL_WHILE_ARMED_radioWaitBusy_WARNING_LONG_BLOCKING(&radioCtx);
 
-  sx126x_pkt_params_lora_t pp = buildNormalPktParams(255);
+  sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL,255);
   sx126x_set_lora_pkt_params(&radioCtx, &pp);
   DO_NOT_CALL_WHILE_ARMED_radioWaitBusy_WARNING_LONG_BLOCKING(&radioCtx);
 
@@ -290,8 +267,12 @@ void radioStartRxTimeout(uint32_t timeoutRtcSteps,
     ledOnRX();
     if (LOG_RX_START) {
       int64_t s = radioGetSlotIndex();
+      uint8_t seqIdx = (uint8_t)(((uint64_t)(s - syncSeedSlotIndex)) % SLOT_SEQUENCE_LEN);
       Serial.print("RxStart: slot="); Serial.print((long long)s);
-      Serial.print(" ch="); Serial.print(hopChannel((uint32_t)(s - syncSeedSlotIndex)));
+      Serial.print(" seq="); Serial.print(seqIdx);
+      Serial.print(" win="); Serial.print(windowModeName(SLOT_SEQUENCE[seqIdx]));
+      Serial.print(" ch="); Serial.print(currentTunedChannel);
+      Serial.print(" hop="); Serial.print(hopIndexOf(currentTunedChannel));
       Serial.print(" timeout="); Serial.print((uint32_t)(timeoutRtcSteps * 15.625f));
       Serial.println("us");
     }
@@ -354,8 +335,12 @@ bool radioStartTx(const uint8_t* pkt, size_t len,
     ledOnTX();
     if (LOG_TX_START) {
       int64_t s = radioGetSlotIndex();
+      uint8_t seqIdx = (uint8_t)(((uint64_t)(s - syncSeedSlotIndex)) % SLOT_SEQUENCE_LEN);
       Serial.print("TxStart: slot="); Serial.print((long long)s);
-      Serial.print(" ch="); Serial.print(hopChannel((uint32_t)(s - syncSeedSlotIndex)));
+      Serial.print(" seq="); Serial.print(seqIdx);
+      Serial.print(" win="); Serial.print(windowModeName(SLOT_SEQUENCE[seqIdx]));
+      Serial.print(" ch="); Serial.print(currentTunedChannel);
+      Serial.print(" hop="); Serial.print(hopIndexOf(currentTunedChannel));
       Serial.print(" len="); Serial.println((unsigned)len);
     }
     return true;
@@ -523,8 +508,8 @@ void nonblockingRadio() {
   }
   if (dio1Fired) radioHandleIrq();
   if (radioState == RADIO_STANDBY) {
-    sx126x_mod_params_lora_t mp = buildNormalModParams();
-    sx126x_pkt_params_lora_t pp = buildNormalPktParams(255);
+    sx126x_mod_params_lora_t mp = buildModParams(CFG_NORMAL);
+    sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL,255);
     uint32_t timeoutUs = 100'000UL;
     radioStartRxTimeout((uint32_t)(timeoutUs / 15.625f), mp, pp, false);
   }
@@ -650,34 +635,34 @@ void nonblockingRadio() {
   if (win == WIN_TELEM) {
     if (txSendingEnabled) {
       applyFrequency(ch);
-      sx126x_mod_params_lora_t mp = buildNormalModParams();
+      sx126x_mod_params_lora_t mp = buildModParams(CFG_NORMAL);
       uint8_t pkt[255];
       size_t len = buildTelemetryPacket(pkt);
-      sx126x_pkt_params_lora_t pp = buildNormalPktParams((uint8_t)len);
+      sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL,(uint8_t)len);
       radioStartTx(pkt, len, mp, pp, false);
     } else {
       // TX disabled — listen on this channel.
       applyFrequency(ch);
-      sx126x_mod_params_lora_t mp = buildNormalModParams();
+      sx126x_mod_params_lora_t mp = buildModParams(CFG_NORMAL);
       int64_t remainUs = slotEndUsFor(slotIndex) - now;
       if (remainUs < 60'000) return;
-      sx126x_pkt_params_lora_t pp = buildNormalPktParams(255);
+      sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL,255);
       radioStartRxTimeout((uint32_t)(remainUs / 15.625f), mp, pp, false);
     }
 
   } else if (win == WIN_LR) {
     if (txSendingEnabled) {
       applyFrequency(ch);
-      sx126x_mod_params_lora_t mp = buildLRModParams();
+      sx126x_mod_params_lora_t mp = buildModParams(CFG_LR);
       uint8_t pkt[3];
       size_t len = buildLRPacketCore(pkt);
-      sx126x_pkt_params_lora_t pp = buildLRPktParams((uint8_t)len);
+      sx126x_pkt_params_lora_t pp = buildPktParams(CFG_LR,(uint8_t)len);
       radioStartTx(pkt, len, mp, pp, true);
     }
 
   } else if (win == WIN_CMD) {
     applyFrequency(activeChannel);
-    sx126x_mod_params_lora_t mp = buildNormalModParams();
+    sx126x_mod_params_lora_t mp = buildModParams(CFG_NORMAL);
 
     bool hasRecentCommand = (lastValidCmdUs != 0 &&
                              (now - lastValidCmdUs) < (int64_t)ROCKET_NO_BASE_HEARD_THRESHOLD_US);
@@ -687,7 +672,7 @@ void nonblockingRadio() {
     if (remainUs > timeoutUs) remainUs = timeoutUs;
     if (remainUs < 60'000) return;
 
-    sx126x_pkt_params_lora_t pp = buildNormalPktParams(255);
+    sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL,255);
     radioStartRxTimeout((uint32_t)(remainUs / 15.625f), mp, pp, false);
 
   } else if (win == WIN_OFF) {
