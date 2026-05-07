@@ -518,7 +518,7 @@ static void dispatchCmdTx() {
       uint8_t bhSf_  = cmdTx.pkt[11];
       int8_t  bhPwr_ = (int8_t)cmdTx.pkt[12];
 
-      float priFreq = bsChannelToFreqMHz(priCh);
+      float priFreq = channelToFreqMHz(priCh);
       if (priFreq != 0.0f && priSf >= 5 && priSf <= 12 && priPwr >= -9 && priPwr <= 22) {
         activeChannel = priCh; activeSF = priSf; activePower = priPwr;
         bsUpdateActiveFreqBw();
@@ -526,7 +526,7 @@ static void dispatchCmdTx() {
         bsNvs.putUChar("radio_sf", activeSF);
         bsNvs.putChar("radio_pwr", activePower);
       }
-      float bhFreq_ = bsChannelToFreqMHz(bhCh_);
+      float bhFreq_ = channelToFreqMHz(bhCh_);
       if (bhFreq_ != 0.0f && bhSf_ >= 5 && bhSf_ <= 12 && bhPwr_ >= -9 && bhPwr_ <= 22) {
         bhChannel = bhCh_; bhSF = bhSf_; bhPower = bhPwr_;
         bsNvs.putUChar("bh_ch", bhChannel);
@@ -535,7 +535,7 @@ static void dispatchCmdTx() {
       }
       bsRadioStandby();
       bsRadioApplyConfig_BLOCKING();
-      bsRadioStartRx();
+      // Slot machine resumes from standby automatically on next slot boundary.
       return;
     }
   }
@@ -917,12 +917,12 @@ void setup() {
   highestNonce = bsNvs.getUInt("nonce", 0);
 
   // Load radio settings from NVS
-  if (bsNvs.isKey("radio_ch")) { uint8_t c = bsNvs.getUChar("radio_ch", DEFAULT_CHANNEL); activeChannel = (bsChannelToFreqMHz(c) != 0.0f) ? c : DEFAULT_CHANNEL; }
+  if (bsNvs.isKey("radio_ch")) { uint8_t c = bsNvs.getUChar("radio_ch", DEFAULT_CHANNEL); activeChannel = (channelToFreqMHz(c) != 0.0f) ? c : DEFAULT_CHANNEL; }
   if (bsNvs.isKey("radio_sf")) { uint8_t s = bsNvs.getUChar("radio_sf", DEFAULT_SF); activeSF = (s >= 5 && s <= 12) ? s : DEFAULT_SF; }
   if (bsNvs.isKey("radio_pwr")) { int8_t p = bsNvs.getChar("radio_pwr", DEFAULT_POWER); activePower = (p >= -9 && p <= 22) ? p : DEFAULT_POWER; }
   bsUpdateActiveFreqBw();
 
-  if (bsNvs.isKey("bh_ch")) { uint8_t c = bsNvs.getUChar("bh_ch", DEFAULT_BH_CHANNEL); bhChannel = (bsChannelToFreqMHz(c) != 0.0f) ? c : DEFAULT_BH_CHANNEL; }
+  if (bsNvs.isKey("bh_ch")) { uint8_t c = bsNvs.getUChar("bh_ch", DEFAULT_BH_CHANNEL); bhChannel = (channelToFreqMHz(c) != 0.0f) ? c : DEFAULT_BH_CHANNEL; }
   if (bsNvs.isKey("bh_sf")) { uint8_t s = bsNvs.getUChar("bh_sf", DEFAULT_BH_SF); bhSF = (s >= 5 && s <= 12) ? s : DEFAULT_BH_SF; }
   if (bsNvs.isKey("bh_pwr")) { int8_t p = bsNvs.getChar("bh_pwr", DEFAULT_BH_POWER); bhPower = (p >= -9 && p <= 22) ? p : DEFAULT_BH_POWER; }
 
@@ -976,7 +976,7 @@ void setup() {
   if (bsRadioInit()) {
     Serial.println("ok");
     bsLoraReady = true;
-    bsRadioStartRx();  // start listening immediately after init// TODO: we dont need to init on boot - the first window will do that for us - why is this here? casn we delete it? will this interfere with the first loop because the radio is already running?
+    // Slot machine starts listening on first slot boundary; no need to start RX here.
   } else {
     Serial.println("FAIL");
   }

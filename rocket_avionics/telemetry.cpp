@@ -238,7 +238,7 @@ static void buildPage0B(uint8_t* buf, size_t* pos) {
 static void buildPage0C(uint8_t* buf, size_t* pos) {
   writeU16(buf, pos, delayedTxCount);
   writeU16(buf, pos, invalidRxCount);
-  int8_t noiseFloor = (int8_t)constrain((int)rssiEma, -128, 127);
+  int8_t noiseFloor = -127;  // obsolete: bg noise floor not tracked in slotted/hop architecture
   writeU8(buf, pos, (uint8_t)noiseFloor);
 
   // Sync status and current slot index
@@ -507,7 +507,7 @@ void logPage(LogPageIdx idx) {
   }
   uint8_t buf[32];
   size_t pos = 0;
-  uint8_t pageType = LOG_PAGE_TYPE[idx]; v//TODO: is this map needed now we do have a zero, this could just be = idx, right?
+  uint8_t pageType = LOG_PAGE_TYPE[idx]; //TODO: is this map needed now we do have a zero, this could just be = idx, right?
   dispatchBuildPage(pageType, buf, &pos);
   if (pos > 0) logDataPage(pageType, buf, (uint8_t)pos);
 }

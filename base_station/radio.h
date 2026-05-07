@@ -53,6 +53,13 @@
 
 #define LORA_RX_BOOSTED true
 
+// ===================== DEBUG LOG FLAGS =====================
+#define LOG_RX_DONE    true
+#define LOG_RX_TIMEOUT false
+#define LOG_RX_START   false
+#define LOG_TX_START   true
+#define LOG_TX_DONE    true
+
 // ===================== RADIO STATE =====================
 
 enum BsRadioState { BS_RADIO_STANDBY, BS_RADIO_RX_ACTIVE, BS_RADIO_TX_ACTIVE };

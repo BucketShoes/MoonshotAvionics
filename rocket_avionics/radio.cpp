@@ -572,7 +572,7 @@ void nonblockingRadio() {
   } else if (win == WIN_CMD) {
     // RX: skip if remaining time in slot is < BS_RX_MIN_REMAINING_US equivalent.
     unsigned long slotEndUs = syncAnchorUs + (uint32_t)((slotIndex - syncSeedSlotIndex + 1) * SLOT_DURATION_US);
-    if ((long)(slotEndUs - now) < (long)BS_RX_MIN_REMAINING_US) {
+    if ((long)(slotEndUs - now) < 60'000L) {
       isOverrun = true;
     }
   }
