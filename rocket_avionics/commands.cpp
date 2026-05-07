@@ -215,9 +215,9 @@ void executeCommand(uint8_t cmdId, uint32_t nonce, const uint8_t* params, size_t
       Serial.print("SYNC: anchor="); Serial.print(dio1CaptureVal);
       Serial.print(" slotIdx=1");
       Serial.print(" micros="); Serial.println(micros());
-      syncAnchorUs      = (unsigned long)dio1CaptureVal;
+      syncAnchorUs      = (int64_t)dio1CaptureVal;
       syncSeedSlotIndex = 1;
-      lastValidCmdUs    = (unsigned long)micros();
+      lastValidCmdUs    = esp_timer_get_time();
       dio1Fired         = false;
       result = CMD_OK;
       break;
@@ -298,14 +298,15 @@ void processReceivedPacket(const uint8_t* pkt, size_t pktLen, int8_t rssi, int8_
 
   highestNonce = nonce;
   nvs.putUInt("nonce", highestNonce);
-  lastValidCmdUs = micros();
+  lastValidCmdUs = esp_timer_get_time();
 
   lastAck.rssi = rssi;
   lastAck.snr  = (int8_t)((float)snr * 4);
 
   // Capture position in slot when command RX completed (in 2ms units, clamped to 255)
-  uint64_t rxTimeUs = dio1TimestampUs();
-  uint64_t elapsed = rxTimeUs - (uint64_t)syncAnchorUs;  // Works even if syncAnchorUs=0
+  int64_t rxTimeUs = (int64_t)dio1TimestampUs();
+  int64_t elapsed = rxTimeUs - syncAnchorUs;
+  if (elapsed < 0) elapsed = 0;
   uint32_t posInSlotUs = (uint32_t)(elapsed % SLOT_DURATION_US);
   uint32_t posInSlotMs = posInSlotUs / 1000;
   lastAck.rxPosInSlot = (posInSlotMs / 2 > 255) ? 255 : (uint8_t)(posInSlotMs / 2);

@@ -361,7 +361,7 @@ void nonblockingLoopStats() {
 
     Serial.print("Loop: "); Serial.print((int)((1/hz)*1'000'000)); Serial.print("us (");
     Serial.print((int)hz); Serial.print(" Hz)  Batt: "); Serial.print(batteryMv);
-    bool inSync = (lastValidCmdUs != 0 && (micros() - lastValidCmdUs) < ROCKET_NO_BASE_HEARD_THRESHOLD_US);
+    bool inSync = (lastValidCmdUs != 0 && (esp_timer_get_time() - lastValidCmdUs) < (int64_t)ROCKET_NO_BASE_HEARD_THRESHOLD_US);
     Serial.print("mV  Sync:"); Serial.print(inSync ? "YES" : "NO");
     Serial.print("  DelayedTX: "); Serial.print(delayedTxCount);
     Serial.print("  InvalidRX: "); Serial.print(invalidRxCount);

@@ -5,6 +5,7 @@
 #define RADIO_H
 
 #include <SPI.h>
+#include <esp_timer.h>     // esp_timer_get_time() — int64 µs since boot
 #include "radio_hal.h"    // sx126x_hal_context_t, dio1Fired, dio1TimestampUs()
 #include "sx126x.h"        // sx126x_driver API
 #include "config.h"        // includes ../common/radio_config.h
@@ -38,10 +39,13 @@ extern float   activeFreqMHz;
 extern float   activeBwKHz;
 
 // ===================== SLOT CLOCK STATE =====================
+// All slot-time arithmetic uses int64 microseconds (esp_timer_get_time()) so that
+// long uptimes don't overflow the slot-index multiplication, and so that
+// "is the deadline in the past?" comparisons are simple signed subtractions.
 
-extern unsigned long syncAnchorUs;
-extern uint32_t      syncSeedSlotIndex;  // slot_index value at anchor time
-extern unsigned long lastValidCmdUs;     // timestamp of last received valid command
+extern int64_t  syncAnchorUs;
+extern int64_t  syncSeedSlotIndex;       // slot_index value at anchor time
+extern int64_t  lastValidCmdUs;          // timestamp of last received valid command
 
 // ===================== MODULATION SNAPSHOT =====================
 // Saved at the start of each RX or TX operation. Used for airtime calculations.
@@ -64,12 +68,12 @@ void updateActiveFreqBw();
 // Returns true if a valid command was received within ROCKET_NO_BASE_HEARD_THRESHOLD_US.
 inline bool radioInSync() {
   return (lastValidCmdUs != 0 &&
-          (micros() - lastValidCmdUs) < ROCKET_NO_BASE_HEARD_THRESHOLD_US);
+          (esp_timer_get_time() - lastValidCmdUs) < (int64_t)ROCKET_NO_BASE_HEARD_THRESHOLD_US);
 }
 
 // Returns current slot index (pure calculation from anchor — no stored variable).
-inline uint32_t radioGetSlotIndex() {
-  return (uint32_t)((micros() - syncAnchorUs) / SLOT_DURATION_US) + syncSeedSlotIndex;
+inline int64_t radioGetSlotIndex() {
+  return ((esp_timer_get_time() - syncAnchorUs) / (int64_t)SLOT_DURATION_US) + syncSeedSlotIndex;
 }
 
 // Initialise radio hardware.

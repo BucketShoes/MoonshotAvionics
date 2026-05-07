@@ -45,9 +45,9 @@ RadioState  radioState = RADIO_STANDBY;
 
 // ===================== SLOT CLOCK STATE =====================
 
-unsigned long syncAnchorUs      = 0;
-uint32_t      syncSeedSlotIndex = 0;
-unsigned long lastValidCmdUs    = 0;
+int64_t syncAnchorUs      = 0;
+int64_t syncSeedSlotIndex = 0;
+int64_t lastValidCmdUs    = 0;
 
 // ===================== MODULATION SNAPSHOT =====================
 
@@ -260,7 +260,13 @@ void radioStartRxTimeout(uint32_t timeoutRtcSteps,
                          const sx126x_pkt_params_lora_t& pktParams,
                          bool isLR) {
   if (digitalRead(LORA_BUSY_PIN)) {
-    Serial.println("RX: BUSY at start — skip");
+    static int64_t lastLogUs = 0; static uint32_t skipped = 0;
+    skipped++;
+    int64_t nowL = esp_timer_get_time();
+    if (nowL - lastLogUs > 1'000'000) {
+      Serial.print("RX: BUSY at start — skipped="); Serial.println(skipped);
+      lastLogUs = nowL; skipped = 0;
+    }
     return;
   }
 
@@ -283,8 +289,9 @@ void radioStartRxTimeout(uint32_t timeoutRtcSteps,
     savedIsLR       = isLR;
     ledOnRX();
     if (LOG_RX_START) {
-      Serial.print("RxStart: slot="); Serial.print(radioGetSlotIndex());
-      Serial.print(" ch="); Serial.print(hopChannel(radioGetSlotIndex()));
+      int64_t s = radioGetSlotIndex();
+      Serial.print("RxStart: slot="); Serial.print((long long)s);
+      Serial.print(" ch="); Serial.print(hopChannel((uint32_t)(s - syncSeedSlotIndex)));
       Serial.print(" timeout="); Serial.print((uint32_t)(timeoutRtcSteps * 15.625f));
       Serial.println("us");
     }
@@ -299,7 +306,13 @@ bool radioStartTx(const uint8_t* pkt, size_t len,
                   const sx126x_pkt_params_lora_t& pktParams,
                   bool isLR) {
   if (digitalRead(LORA_BUSY_PIN)) {
-    Serial.println("TX: BUSY — skip");
+    static int64_t lastLogUs = 0; static uint32_t skipped = 0;
+    skipped++;
+    int64_t nowL = esp_timer_get_time();
+    if (nowL - lastLogUs > 1'000'000) {
+      Serial.print("TX: BUSY — skipped="); Serial.println(skipped);
+      lastLogUs = nowL; skipped = 0;
+    }
     return false;
   }
 
@@ -340,8 +353,9 @@ bool radioStartTx(const uint8_t* pkt, size_t len,
     savedIsLR      = isLR;
     ledOnTX();
     if (LOG_TX_START) {
-      Serial.print("TxStart: slot="); Serial.print(radioGetSlotIndex());
-      Serial.print(" ch="); Serial.print(hopChannel(radioGetSlotIndex()));
+      int64_t s = radioGetSlotIndex();
+      Serial.print("TxStart: slot="); Serial.print((long long)s);
+      Serial.print(" ch="); Serial.print(hopChannel((uint32_t)(s - syncSeedSlotIndex)));
       Serial.print(" len="); Serial.println((unsigned)len);
     }
     return true;
@@ -426,6 +440,8 @@ static void radioHandleIrq() {
     return;
   }
 
+  int64_t eventSlotIdx = ((int64_t)eventUs - syncAnchorUs) / (int64_t)SLOT_DURATION_US + syncSeedSlotIndex;
+
   if (irqFlags & SX126X_IRQ_TX_DONE) {
 #ifdef LORA_FEM_PA_PIN
     digitalWrite(LORA_FEM_PA_PIN, LOW);
@@ -433,7 +449,7 @@ static void radioHandleIrq() {
     radioState = RADIO_STANDBY;
     ledOff();
     if (LOG_TX_DONE) {
-      Serial.print("TxDone: slot="); Serial.println((eventUs - syncAnchorUs) / SLOT_DURATION_US + syncSeedSlotIndex);
+      Serial.print("TxDone: slot="); Serial.println((long long)eventSlotIdx);
     }
   }
 
@@ -441,7 +457,7 @@ static void radioHandleIrq() {
     radioState = RADIO_STANDBY;
     if (savedIsLR) applyImplicitHeaderErrataFix();
     if (LOG_RX_DONE) {
-      Serial.print("RxDone: slot="); Serial.println((eventUs - syncAnchorUs) / SLOT_DURATION_US + syncSeedSlotIndex);
+      Serial.print("RxDone: slot="); Serial.println((long long)eventSlotIdx);
     }
     handleRxDone();
     ledOff();
@@ -455,11 +471,11 @@ static void radioHandleIrq() {
     rxTimeoutCountTotal++;
     if (rxTimeoutCountTotal % 10 == 0) {
       Serial.print("RX_TIMEOUT (count="); Serial.print(rxTimeoutCountTotal);
-      Serial.print(" slot="); Serial.print((eventUs - syncAnchorUs) / SLOT_DURATION_US + syncSeedSlotIndex);
+      Serial.print(" slot="); Serial.print((long long)eventSlotIdx);
       Serial.println(")");
     }
     if (LOG_RX_TIMEOUT) {
-      Serial.print("RxTimeout: slot="); Serial.println((eventUs - syncAnchorUs) / SLOT_DURATION_US + syncSeedSlotIndex);
+      Serial.print("RxTimeout: slot="); Serial.println((long long)eventSlotIdx);
     }
   }
 
@@ -515,13 +531,24 @@ void nonblockingRadio() {
 }
 #else
 
-// nextActionUs: micros() timestamp at which the next slot action should begin.
-// Computed when starting each action; the loop polls micros() vs this stamp.
-static unsigned long nextActionUs = 0;
-// Slot index corresponding to the next action (used to detect when the slot changes).
-static uint32_t      nextActionSlotIndex = 0;
+// nextActionUs: int64 esp_timer timestamp at which the next slot action should begin.
+// All slot math uses int64 µs so we don't overflow the slotIndex*SLOT_DURATION_US
+// product on long uptimes, and so signed-subtraction comparisons are unambiguous.
+static int64_t nextActionUs        = 0;
+static int64_t nextActionSlotIndex = 0;
 // Consecutive unexpected overruns (busy radio at slot boundary, excluding WIN_CONTINUE).
-static uint8_t       unexpectedOverruns = 0;
+static uint8_t unexpectedOverruns = 0;
+
+// Rate-limit recurring radio diagnostics to keep them from drowning the serial log.
+static int64_t lastOverrunLogUs = 0;
+static int64_t lastBusyLogUs    = 0;
+static uint32_t overrunSinceLog = 0;
+static uint32_t busySinceLog    = 0;
+
+// Compute the absolute end-of-slot timestamp for the given slot index.
+static inline int64_t slotEndUsFor(int64_t slotIndex) {
+  return syncAnchorUs + (slotIndex - syncSeedSlotIndex + 1) * (int64_t)SLOT_DURATION_US;
+}
 
 void nonblockingRadio() {
   if (!loraReady) return;
@@ -531,17 +558,15 @@ void nonblockingRadio() {
     radioHandleIrq();
   }
 
-  unsigned long now = micros();
+  int64_t now = esp_timer_get_time();
 
   // Compute current slot state.
-  uint32_t slotIndex = radioGetSlotIndex();
-  uint8_t  seqIdx    = (uint8_t)(slotIndex % SLOT_SEQUENCE_LEN);
-  WindowMode win     = SLOT_SEQUENCE[seqIdx];
-  uint8_t  ch        = hopChannel(slotIndex);
+  int64_t slotIndex = radioGetSlotIndex();
+  uint8_t  seqIdx   = (uint8_t)(((uint64_t)(slotIndex - syncSeedSlotIndex)) % SLOT_SEQUENCE_LEN);
+  WindowMode win    = SLOT_SEQUENCE[seqIdx];
+  uint8_t  ch       = hopChannel((uint32_t)(slotIndex - syncSeedSlotIndex));
 
-  // Compute the timestamp for this slot's action.
-  // nextActionUs is set when we start an action; if it hasn't been set yet (boot),
-  // initialise it to now so we start the first slot immediately.
+  // First call after boot: align nextActionUs with current time so the first slot fires.
   if (nextActionUs == 0) {
     nextActionUs        = now;
     nextActionSlotIndex = slotIndex;
@@ -551,64 +576,76 @@ void nonblockingRadio() {
   if (win == WIN_CONTINUE) {
     if (slotIndex != nextActionSlotIndex) {
       nextActionSlotIndex = slotIndex;
-      // Advance to after this continue slot.
-      nextActionUs = syncAnchorUs + (uint32_t)((slotIndex - syncSeedSlotIndex + 1) * SLOT_DURATION_US);
+      nextActionUs        = slotEndUsFor(slotIndex);
     }
     return;
   }
 
-  // Not yet time for the next action.
-  if ((long)(now - nextActionUs) < 0) return;
+  // Not yet time for the next action — int64 signed subtraction.
+  if (now < nextActionUs) return;
 
-  // Time has come (or overdue). Check overrun conditions before checking BUSY.
+  // Time has come (or overdue). Check overrun conditions before BUSY.
   bool isOverrun = false;
 
   if (win == WIN_TELEM || win == WIN_LR) {
     // TX: skip if more than 10ms late.
-    if ((long)(now - nextActionUs) > 10'000L) {
+    if ((now - nextActionUs) > 10'000) {
       isOverrun = true;
       delayedTxCount++;
     }
   } else if (win == WIN_CMD) {
-    // RX: skip if remaining time in slot is < BS_RX_MIN_REMAINING_US equivalent.
-    unsigned long slotEndUs = syncAnchorUs + (uint32_t)((slotIndex - syncSeedSlotIndex + 1) * SLOT_DURATION_US);
-    if ((long)(slotEndUs - now) < 60'000L) {
+    // RX: skip if remaining time in slot < 60ms.
+    if ((slotEndUsFor(slotIndex) - now) < 60'000) {
       isOverrun = true;
     }
   }
 
   if (isOverrun) {
     unexpectedOverruns++;
-    Serial.print("RADIO: overrun win="); Serial.print((int)win);
-    Serial.print(" count="); Serial.println(unexpectedOverruns);
+    overrunSinceLog++;
+    if ((now - lastOverrunLogUs) > 1'000'000) {
+      Serial.print("RADIO: overrun win="); Serial.print((int)win);
+      Serial.print(" consec="); Serial.print(unexpectedOverruns);
+      Serial.print(" totalSinceLog="); Serial.print(overrunSinceLog);
+      Serial.print(" slot="); Serial.println((long long)slotIndex);
+      lastOverrunLogUs = now;
+      overrunSinceLog  = 0;
+    }
     if (unexpectedOverruns >= 3) {
       Serial.println("RADIO: 3 overruns — forcing standby");
       radioStandby();
       unexpectedOverruns = 0;
     }
-    // Advance to next slot.
     nextActionSlotIndex = slotIndex + 1;
-    nextActionUs = syncAnchorUs + (uint32_t)((slotIndex - syncSeedSlotIndex + 1) * SLOT_DURATION_US);
+    nextActionUs        = slotEndUsFor(slotIndex);
     return;
   }
 
-  // Check BUSY pin. If busy, the radio is still running from a previous operation.
+  // Check BUSY pin.
   if (digitalRead(LORA_BUSY_PIN)) {
     unexpectedOverruns++;
+    busySinceLog++;
+    if ((now - lastBusyLogUs) > 1'000'000) {
+      Serial.print("RADIO: BUSY at boundary consec="); Serial.print(unexpectedOverruns);
+      Serial.print(" totalSinceLog="); Serial.print(busySinceLog);
+      Serial.print(" slot="); Serial.println((long long)slotIndex);
+      lastBusyLogUs = now;
+      busySinceLog  = 0;
+    }
     if (unexpectedOverruns >= 3) {
       Serial.println("RADIO: BUSY stuck 3 slots — forcing standby");
       radioStandby();
       unexpectedOverruns = 0;
       nextActionSlotIndex = slotIndex + 1;
-      nextActionUs = syncAnchorUs + (uint32_t)((slotIndex - syncSeedSlotIndex + 1) * SLOT_DURATION_US);
+      nextActionUs        = slotEndUsFor(slotIndex);
     }
     return;
   }
 
-  // BUSY is clear and time has come. Take the slot action.
-  unexpectedOverruns = 0;
+  // BUSY clear and time has come. Take the slot action.
+  unexpectedOverruns  = 0;
   nextActionSlotIndex = slotIndex + 1;
-  nextActionUs = syncAnchorUs + (uint32_t)((slotIndex - syncSeedSlotIndex + 1) * SLOT_DURATION_US);
+  nextActionUs        = slotEndUsFor(slotIndex);
 
   if (win == WIN_TELEM) {
     if (txSendingEnabled) {
@@ -619,12 +656,11 @@ void nonblockingRadio() {
       sx126x_pkt_params_lora_t pp = buildNormalPktParams((uint8_t)len);
       radioStartTx(pkt, len, mp, pp, false);
     } else {
-      // TX disabled — listen on this channel (e.g. ground test mode).
+      // TX disabled — listen on this channel.
       applyFrequency(ch);
       sx126x_mod_params_lora_t mp = buildNormalModParams();
-      uint32_t slotEndUs = syncAnchorUs + (uint32_t)((slotIndex - syncSeedSlotIndex + 1) * SLOT_DURATION_US);
-      uint32_t remainUs = (uint32_t)((long)(slotEndUs - now));
-      if (remainUs < 60'000UL) return;
+      int64_t remainUs = slotEndUsFor(slotIndex) - now;
+      if (remainUs < 60'000) return;
       sx126x_pkt_params_lora_t pp = buildNormalPktParams(255);
       radioStartRxTimeout((uint32_t)(remainUs / 15.625f), mp, pp, false);
     }
@@ -638,22 +674,18 @@ void nonblockingRadio() {
       sx126x_pkt_params_lora_t pp = buildLRPktParams((uint8_t)len);
       radioStartTx(pkt, len, mp, pp, true);
     }
-    // If TX disabled, stay standby for WIN_LR.
 
   } else if (win == WIN_CMD) {
-    // RX for command on fixed command channel.
     applyFrequency(activeChannel);
     sx126x_mod_params_lora_t mp = buildNormalModParams();
 
-    // Timeout: use short window if we've heard a command recently, long window if not.
     bool hasRecentCommand = (lastValidCmdUs != 0 &&
-                             (now - lastValidCmdUs) < ROCKET_NO_BASE_HEARD_THRESHOLD_US);
-    uint32_t timeoutUs = hasRecentCommand ? ROCKET_RX_TIMEOUT_US : ROCKET_LONG_RX_TIMEOUT_US;
-    // Cap to remaining slot time.
-    unsigned long slotEndUs = syncAnchorUs + (uint32_t)((slotIndex - syncSeedSlotIndex + 1) * SLOT_DURATION_US);
-    uint32_t remainUs = (uint32_t)((long)(slotEndUs - now));
-    if (remainUs >= timeoutUs) remainUs = timeoutUs;  // don't exceed our desired timeout
-    if (remainUs < 60'000UL) return;
+                             (now - lastValidCmdUs) < (int64_t)ROCKET_NO_BASE_HEARD_THRESHOLD_US);
+    int64_t timeoutUs = hasRecentCommand ? (int64_t)ROCKET_RX_TIMEOUT_US
+                                         : (int64_t)ROCKET_LONG_RX_TIMEOUT_US;
+    int64_t remainUs = slotEndUsFor(slotIndex) - now;
+    if (remainUs > timeoutUs) remainUs = timeoutUs;
+    if (remainUs < 60'000) return;
 
     sx126x_pkt_params_lora_t pp = buildNormalPktParams(255);
     radioStartRxTimeout((uint32_t)(remainUs / 15.625f), mp, pp, false);
@@ -661,7 +693,6 @@ void nonblockingRadio() {
   } else if (win == WIN_OFF) {
     radioStandby();
   }
-  // Other WIN_ types: stay standby.
 }
 
 #endif  // ROCKET_RADIO_TEST_MODE

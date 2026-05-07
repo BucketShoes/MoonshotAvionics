@@ -7,6 +7,7 @@
 
 #include <Arduino.h>
 #include <SPI.h>
+#include <esp_timer.h>     // esp_timer_get_time() — int64 µs since boot
 #include "radio_hal.h"
 #include "sx126x.h"
 #include "../common/radio_config.h"
@@ -78,33 +79,33 @@ enum BsScanState {
 
 extern BsScanState bsScanState;
 
-extern unsigned long bsSyncAnchorUs;
-extern uint32_t      bsSyncSeedSlotIndex;
+extern int64_t bsSyncAnchorUs;
+extern int64_t bsSyncSeedSlotIndex;
 
-extern unsigned long bsCandidateAnchorUs;
-extern uint32_t      bsCandidateSeedSlotIndex;
-extern float         bsCandidateDriftEmaUs;
+extern int64_t bsCandidateAnchorUs;
+extern int64_t bsCandidateSeedSlotIndex;
+extern float   bsCandidateDriftEmaUs;
 
-extern unsigned long bsBackupAnchorUs;
-extern uint32_t      bsBackupSeedSlotIndex;
-extern float         bsBackupDriftEmaUs;
+extern int64_t bsBackupAnchorUs;
+extern int64_t bsBackupSeedSlotIndex;
+extern float   bsBackupDriftEmaUs;
 
 extern float bsDriftEmaUs;
 
 extern unsigned long bsScanStartMs;
 extern unsigned long bsCandidateStartMs;
 
-extern unsigned long bsLastGoodTelemUs;
-extern uint32_t      bsLastTelemErrorUs;
+extern int64_t  bsLastGoodTelemUs;
+extern uint32_t bsLastTelemErrorUs;
 
 inline bool bsInSync() {
   return (bsLastGoodTelemUs != 0) &&
-         ((unsigned long)(micros() - bsLastGoodTelemUs) < BS_IN_SYNC_TIMEOUT_US) &&
+         ((esp_timer_get_time() - bsLastGoodTelemUs) < (int64_t)BS_IN_SYNC_TIMEOUT_US) &&
          (bsLastTelemErrorUs < BS_IN_SYNC_TIMING_US);
 }
 
-inline uint32_t bsGetSlotIndex() {
-  return (uint32_t)((micros() - bsSyncAnchorUs) / SLOT_DURATION_US) + bsSyncSeedSlotIndex;
+inline int64_t bsGetSlotIndex() {
+  return ((esp_timer_get_time() - bsSyncAnchorUs) / (int64_t)SLOT_DURATION_US) + bsSyncSeedSlotIndex;
 }
 
 // ===================== OTHER STATE =====================

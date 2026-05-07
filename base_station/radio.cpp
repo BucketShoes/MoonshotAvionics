@@ -60,24 +60,24 @@ bool         bsLoraReady  = false;
 
 BsScanState  bsScanState            = SCAN_SEARCHING;
 
-unsigned long bsSyncAnchorUs        = 0;
-uint32_t      bsSyncSeedSlotIndex   = 0;
+int64_t bsSyncAnchorUs           = 0;
+int64_t bsSyncSeedSlotIndex      = 0;
 
-unsigned long bsCandidateAnchorUs   = 0;
-uint32_t      bsCandidateSeedSlotIndex = 0;
-float         bsCandidateDriftEmaUs = 0.0f;
+int64_t bsCandidateAnchorUs      = 0;
+int64_t bsCandidateSeedSlotIndex = 0;
+float   bsCandidateDriftEmaUs    = 0.0f;
 
-unsigned long bsBackupAnchorUs      = 0;
-uint32_t      bsBackupSeedSlotIndex = 0;
-float         bsBackupDriftEmaUs    = 0.0f;
+int64_t bsBackupAnchorUs         = 0;
+int64_t bsBackupSeedSlotIndex    = 0;
+float   bsBackupDriftEmaUs       = 0.0f;
 
-float         bsDriftEmaUs          = 0.0f;
+float         bsDriftEmaUs       = 0.0f;
 
-unsigned long bsScanStartMs         = 0;
-unsigned long bsCandidateStartMs    = 0;
+unsigned long bsScanStartMs      = 0;
+unsigned long bsCandidateStartMs = 0;
 
-unsigned long bsLastGoodTelemUs     = 0;
-uint32_t      bsLastTelemErrorUs    = UINT32_MAX;
+int64_t  bsLastGoodTelemUs       = 0;
+uint32_t bsLastTelemErrorUs      = UINT32_MAX;
 
 // ===================== MODULATION SNAPSHOT =====================
 
@@ -262,7 +262,13 @@ void bsRadioStartRxTimeout(uint32_t timeoutRtcSteps,
                             const sx126x_pkt_params_lora_t& pktParams,
                             bool isLR) {
   if (digitalRead(LORA_BUSY_PIN)) {
-    Serial.println("BS RX: BUSY at start — skip");
+    static int64_t lastLogUs = 0; static uint32_t skipped = 0;
+    skipped++;
+    int64_t nowL = esp_timer_get_time();
+    if (nowL - lastLogUs > 1'000'000) {
+      Serial.print("BS RX: BUSY at start — skipped="); Serial.println(skipped);
+      lastLogUs = nowL; skipped = 0;
+    }
     return;
   }
 
@@ -284,8 +290,9 @@ void bsRadioStartRxTimeout(uint32_t timeoutRtcSteps,
     bsSavedIsLR     = isLR;
     bsLedOn();
     if (LOG_RX_START) {
-      Serial.print("BS RxStart: slot="); Serial.print(bsGetSlotIndex());
-      Serial.print(" ch="); Serial.print(hopChannel(bsGetSlotIndex()));
+      int64_t s = bsGetSlotIndex();
+      Serial.print("BS RxStart: slot="); Serial.print((long long)s);
+      Serial.print(" ch="); Serial.print(hopChannel((uint32_t)(s - bsSyncSeedSlotIndex)));
       Serial.print(" timeout="); Serial.print((uint32_t)(timeoutRtcSteps * 15.625f));
       Serial.println("us");
     }
@@ -297,7 +304,13 @@ void bsRadioStartRxTimeout(uint32_t timeoutRtcSteps,
 
 bool bsRadioStartTx(const uint8_t* pkt, size_t len) {
   if (digitalRead(LORA_BUSY_PIN)) {
-    Serial.println("BS TX: BUSY — drop");
+    static int64_t lastLogUs = 0; static uint32_t skipped = 0;
+    skipped++;
+    int64_t nowL = esp_timer_get_time();
+    if (nowL - lastLogUs > 1'000'000) {
+      Serial.print("BS TX: BUSY — dropped="); Serial.println(skipped);
+      lastLogUs = nowL; skipped = 0;
+    }
     return false;
   }
 
@@ -336,7 +349,8 @@ bool bsRadioStartTx(const uint8_t* pkt, size_t len) {
     bsRadioState = BS_RADIO_TX_ACTIVE;
     bsLedOn();
     if (LOG_TX_START) {
-      Serial.print("BS TxStart: slot="); Serial.print(bsGetSlotIndex());
+      int64_t s = bsGetSlotIndex();
+      Serial.print("BS TxStart: slot="); Serial.print((long long)s);
       Serial.print(" len="); Serial.println((unsigned)len);
     }
     return true;
@@ -364,32 +378,23 @@ void bsTriggerScan() {
 // ===================== DRIFT EMA =====================
 
 // Called on each valid WIN_TELEM RxDone only.
-// drift = time from expected slot start to actual packet start = rxDoneUs - airtimeUs - expectedSlotStartUs
-// Uses saved modulation params (not current settings). 5ms per-packet cap.
-static void applyDriftCorrection(uint64_t rxDoneUs, uint32_t slotIndex,
-                                  unsigned long* anchorUs, float* driftEma) {
-  // Airtime from saved params at RX start.
-  uint32_t rxLen = bsSavedPktParams.pld_len_in_bytes;
-  sx126x_pkt_params_lora_t pp = bsSavedPktParams;
-  pp.pld_len_in_bytes = rxLen;
-  uint32_t airtimeMs = sx126x_get_lora_time_on_air_in_ms(&pp, &bsSavedModParams);
-  uint32_t airtimeUs = airtimeMs * 1000;
+// drift = rxStart_actual - expectedSlotStart. Uses saved modulation params + 5ms/packet cap.
+static void applyDriftCorrection(int64_t rxDoneUs, int64_t slotIndex,
+                                  int64_t* anchorUs, float* driftEma) {
+  uint32_t airtimeMs = sx126x_get_lora_time_on_air_in_ms(&bsSavedPktParams, &bsSavedModParams);
+  int64_t  airtimeUs = (int64_t)airtimeMs * 1000;
 
-  // Expected slot start based on anchor.
-  uint32_t slotsSinceAnchor = slotIndex - bsSyncSeedSlotIndex;
-  int64_t expectedStartUs = (int64_t)(*anchorUs) + (int64_t)slotsSinceAnchor * SLOT_DURATION_US;
-  int64_t rxStartUs = (int64_t)rxDoneUs - (int64_t)airtimeUs;
-  int32_t driftUs = (int32_t)(rxStartUs - expectedStartUs);
+  int64_t expectedStartUs = *anchorUs + (slotIndex - bsSyncSeedSlotIndex) * (int64_t)SLOT_DURATION_US;
+  int64_t rxStartUs       = rxDoneUs - airtimeUs;
+  int32_t driftUs         = (int32_t)(rxStartUs - expectedStartUs);
 
-  // Slow EMA (alpha = 0.05).
   *driftEma = (*driftEma) * 0.95f + (float)driftUs * 0.05f;
 
-  // Per-packet cap: 5ms max correction.
   int32_t correction = (int32_t)(*driftEma * 0.05f);
   if (correction >  5000) correction =  5000;
   if (correction < -5000) correction = -5000;
 
-  *anchorUs = (unsigned long)((int64_t)(*anchorUs) + correction);
+  *anchorUs += correction;
 }
 
 // ===================== RX PACKET HANDLER =====================
@@ -429,8 +434,8 @@ static void bsHandleRxDone(uint64_t eventUs) {
 
   uint32_t timeOnAirMs = sx126x_get_lora_time_on_air_in_ms(&bsSavedPktParams, &bsSavedModParams);
 
-  uint32_t slotIndex = bsGetSlotIndex();
-  uint8_t  seqIdx    = (uint8_t)(slotIndex % SLOT_SEQUENCE_LEN);
+  int64_t  slotIndex = bsGetSlotIndex();
+  uint8_t  seqIdx    = (uint8_t)(((uint64_t)(slotIndex - bsSyncSeedSlotIndex)) % SLOT_SEQUENCE_LEN);
   WindowMode win     = SLOT_SEQUENCE[seqIdx];
 
   // WIN_LR: reconstruct the 5-byte format.
@@ -439,7 +444,7 @@ static void bsHandleRxDone(uint64_t eventUs) {
     synth[0] = PKT_LONGRANGE;
     synth[1] = FAVORITE_ROCKET_DEVICE_ID;
     synth[2] = buf[0]; synth[3] = buf[1]; synth[4] = buf[2];
-    bsOnPacketReceived(synth, 5, snrF, rssiF, slotIndex, seqIdx, (uint8_t)win, timeOnAirMs, bsDriftEmaUs);
+    bsOnPacketReceived(synth, 5, snrF, rssiF, (uint32_t)slotIndex, seqIdx, (uint8_t)win, timeOnAirMs, bsDriftEmaUs);
     return;
   }
 
@@ -449,65 +454,54 @@ static void bsHandleRxDone(uint64_t eventUs) {
   if (isTelemetry) {
     bsLastTelemRxMs = millis();
 
-    // Extract slot_seq_idx from bits [12:15] of stateFlags (bytes 8–9 in 0xAF header).
     uint16_t stateFlags = (uint16_t)buf[8] | ((uint16_t)buf[9] << 8);
-    uint8_t packetSlotSeqIdx = (stateFlags >> 12) & 0x0F;
+    uint8_t  packetSlotSeqIdx = (stateFlags >> 12) & 0x0F;
 
-    // Compute expected slot start for this packet.
-    uint32_t airtimeUs = timeOnAirMs * 1000;
-    uint64_t rxStartUs = (uint64_t)eventUs - (uint64_t)airtimeUs;
+    int64_t airtimeUs = (int64_t)timeOnAirMs * 1000;
+    int64_t rxStartUs = (int64_t)eventUs - airtimeUs;
 
     if (bsScanState == SCAN_SEARCHING) {
-      // Compute candidate anchor: anchor such that slot packetSlotSeqIdx starts at rxStartUs.
-      // bsSyncSeedSlotIndex=0 means anchor is the start of slot 0 in the sequence.
-      // We want: anchor + packetSlotSeqIdx * SLOT_DURATION_US = rxStartUs
-      // So: anchor = rxStartUs - packetSlotSeqIdx * SLOT_DURATION_US
-      bsCandidateAnchorUs       = (unsigned long)(rxStartUs - (uint64_t)packetSlotSeqIdx * SLOT_DURATION_US);
-      bsCandidateSeedSlotIndex  = 0;
-      bsCandidateDriftEmaUs     = 0.0f;
+      // anchor + packetSlotSeqIdx * SLOT_DURATION_US = rxStartUs
+      bsCandidateAnchorUs      = rxStartUs - (int64_t)packetSlotSeqIdx * (int64_t)SLOT_DURATION_US;
+      bsCandidateSeedSlotIndex = 0;
+      bsCandidateDriftEmaUs    = 0.0f;
 
-      // Transition to CANDIDATE.
       bsScanState        = SCAN_CANDIDATE;
       bsCandidateStartMs = millis();
 
-      // Switch to slotted operation using candidate anchor.
       bsSyncAnchorUs      = bsCandidateAnchorUs;
       bsSyncSeedSlotIndex = bsCandidateSeedSlotIndex;
 
-      Serial.print("BS SCAN: candidate anchor="); Serial.print(bsCandidateAnchorUs);
+      Serial.print("BS SCAN: candidate anchor="); Serial.print((long long)bsCandidateAnchorUs);
       Serial.print(" packetSlot="); Serial.println(packetSlotSeqIdx);
 
     } else {
-      // SCAN_CANDIDATE or SCAN_LOCKED: apply drift correction.
-      // Compute timing error against current anchor.
-      uint32_t slotsSinceAnchor = slotIndex - bsSyncSeedSlotIndex;
-      int64_t expectedSlotStartUs = (int64_t)bsSyncAnchorUs + (int64_t)slotsSinceAnchor * SLOT_DURATION_US;
+      int64_t expectedSlotStartUs = bsSyncAnchorUs +
+        (slotIndex - bsSyncSeedSlotIndex) * (int64_t)SLOT_DURATION_US;
       int64_t timingErrorUs = rxStartUs - expectedSlotStartUs;
       bsLastTelemErrorUs = (uint32_t)(timingErrorUs < 0 ? -timingErrorUs : timingErrorUs);
 
       if (bsScanState == SCAN_CANDIDATE) {
-        applyDriftCorrection(eventUs, slotIndex, &bsSyncAnchorUs, &bsCandidateDriftEmaUs);
+        applyDriftCorrection((int64_t)eventUs, slotIndex, &bsSyncAnchorUs, &bsCandidateDriftEmaUs);
 
         if (bsLastTelemErrorUs < BS_IN_SYNC_TIMING_US) {
-          // Timing consistent — lock in.
-          bsDriftEmaUs        = bsCandidateDriftEmaUs;
-          bsScanState         = SCAN_LOCKED;
-          bsLastGoodTelemUs   = (unsigned long)micros();
-          Serial.print("BS SCAN: LOCKED anchor="); Serial.print(bsSyncAnchorUs);
+          bsDriftEmaUs      = bsCandidateDriftEmaUs;
+          bsScanState       = SCAN_LOCKED;
+          bsLastGoodTelemUs = esp_timer_get_time();
+          Serial.print("BS SCAN: LOCKED anchor="); Serial.print((long long)bsSyncAnchorUs);
           Serial.print(" error="); Serial.print(bsLastTelemErrorUs); Serial.println("us");
         }
       } else {
-        // SCAN_LOCKED: normal drift EMA.
-        applyDriftCorrection(eventUs, slotIndex, &bsSyncAnchorUs, &bsDriftEmaUs);
+        applyDriftCorrection((int64_t)eventUs, slotIndex, &bsSyncAnchorUs, &bsDriftEmaUs);
 
         if (bsLastTelemErrorUs < BS_IN_SYNC_TIMING_US) {
-          bsLastGoodTelemUs = (unsigned long)micros();
+          bsLastGoodTelemUs = esp_timer_get_time();
         }
       }
     }
   }
 
-  bsOnPacketReceived(buf, rxLen, snrF, rssiF, slotIndex, seqIdx, (uint8_t)win, timeOnAirMs, bsDriftEmaUs);
+  bsOnPacketReceived(buf, rxLen, snrF, rssiF, (uint32_t)slotIndex, seqIdx, (uint8_t)win, timeOnAirMs, bsDriftEmaUs);
 }
 
 // ===================== IRQ HANDLER =====================
@@ -529,7 +523,7 @@ static void bsRadioHandleIrq() {
     bsRadioState = BS_RADIO_STANDBY;
     bsLedOff();
     if (LOG_TX_DONE) {
-      Serial.print("BS TxDone: slot="); Serial.println(bsGetSlotIndex());
+      Serial.print("BS TxDone: slot="); Serial.println((long long)bsGetSlotIndex());
     }
   }
 
@@ -539,7 +533,7 @@ static void bsRadioHandleIrq() {
     bsHandleRxDone(eventUs);
     bsLedOff();
     if (LOG_RX_DONE) {
-      Serial.print("BS RxDone: slot="); Serial.println(bsGetSlotIndex());
+      Serial.print("BS RxDone: slot="); Serial.println((long long)bsGetSlotIndex());
     }
   }
 
@@ -554,7 +548,7 @@ static void bsRadioHandleIrq() {
       Serial.println(")");
     }
     if (LOG_RX_TIMEOUT) {
-      Serial.print("BS RxTimeout: slot="); Serial.println(bsGetSlotIndex());
+      Serial.print("BS RxTimeout: slot="); Serial.println((long long)bsGetSlotIndex());
     }
 
     // If searching, restart infinite-timeout RX on same channel.

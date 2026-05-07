@@ -23,8 +23,8 @@ struct CommandAck {
 
 extern CommandAck lastAck;
 
-// Track when last verified command was received (micros).
-extern unsigned long lastValidCmdUs;
+// Track when last verified command was received (esp_timer µs since boot).
+extern int64_t lastValidCmdUs;
 
 // ===================== HMAC / NONCE STATE =====================
 
