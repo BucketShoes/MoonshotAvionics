@@ -451,7 +451,11 @@ static void radioHandleIrq() {
     if (LOG_RX_DONE) {
       Serial.print("RxDone: slot="); Serial.println((long long)eventSlotIdx);
     }
-    handleRxDone();
+    // SX1262 sets RX_DONE alongside CRC_ERROR/HEADER_ERROR for failed packets;
+    // skip buffer read in that case — the payload is garbage.
+    if (!(irqFlags & (SX126X_IRQ_CRC_ERROR | SX126X_IRQ_HEADER_ERROR))) {
+      handleRxDone();
+    }
     ledOff();
   }
 

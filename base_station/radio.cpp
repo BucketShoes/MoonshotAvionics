@@ -537,7 +537,12 @@ static void bsRadioHandleIrq() {
   if (irqFlags & SX126X_IRQ_RX_DONE) {
     bsRadioState = BS_RADIO_STANDBY;
     if (bsSavedIsLR) applyImplicitHeaderErrataFix();
-    bsHandleRxDone(eventUs);
+    // SX1262 sets RX_DONE alongside CRC_ERROR/HEADER_ERROR for failed packets.
+    // Skip buffer read+drift-EMA in that case — the payload is garbage and would
+    // poison the sync anchor.
+    if (!(irqFlags & (SX126X_IRQ_CRC_ERROR | SX126X_IRQ_HEADER_ERROR))) {
+      bsHandleRxDone(eventUs);
+    }
     bsLedOff();
     if (LOG_RX_DONE) {
       Serial.print("BS RxDone: slot="); Serial.println((long long)bsGetSlotIndex());
