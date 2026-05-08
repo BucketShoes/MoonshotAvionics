@@ -92,6 +92,10 @@ unsigned long bsLastTelemRxMs = 0;
 unsigned long bsLastCmdSentMs = 0;
 bool bsWinCmdReady = false;
 
+// Diagnostic: timestamp when set_rx was last issued, so terminating IRQs can log
+// actual-RX-duration for missing-packet diagnosis.
+int64_t bsRxIssuedUs = 0;
+
 // ===================== HELPERS =====================
 
 void bsUpdateActiveFreqBw() {
@@ -243,13 +247,25 @@ void bsRadioStartRxTimeout(uint32_t timeoutRtcSteps,
                             const sx126x_pkt_params_lora_t& pktParams,
                             bool isLR) {
   if (LOG_RX_START) {
+    int64_t now = esp_timer_get_time();
     int64_t s = bsGetSlotIndex();
+    int64_t slotStart = bsSyncAnchorUs + (s - bsSyncSeedSlotIndex) * (int64_t)SLOT_DURATION_US;
     uint8_t seqIdx = (uint8_t)(((uint64_t)(s - bsSyncSeedSlotIndex)) % SLOT_SEQUENCE_LEN);
     Serial.print("BS RxAttempt: slot="); Serial.print((long long)s);
     Serial.print(" seq="); Serial.print(seqIdx);
     Serial.print(" win="); Serial.print(windowModeName(SLOT_SEQUENCE[seqIdx]));
     Serial.print(" ch="); Serial.print(currentTunedChannel);
-    Serial.print(" busy="); Serial.println(digitalRead(LORA_BUSY_PIN));
+    Serial.print(" intoSlotUs="); Serial.print((long long)(now - slotStart));
+    Serial.print(" busy="); Serial.print(digitalRead(LORA_BUSY_PIN));
+    Serial.print(" priorState="); Serial.print((int)bsRadioState);
+    Serial.print(" dio1Fired="); Serial.println((int)dio1Fired);
+  }
+  // If we're about to start a new RX while the previous action hasn't completed,
+  // that's a tear-down of in-progress state — log it so we can correlate with
+  // missing-packet symptoms.
+  if (bsRadioState != BS_RADIO_STANDBY) {
+    Serial.print("BS RX: STARTING WHILE state="); Serial.print((int)bsRadioState);
+    Serial.print(" dio1Fired="); Serial.println((int)dio1Fired);
   }
   if (digitalRead(LORA_BUSY_PIN)) {
     if (LOG_RX_START) Serial.println("BS RX: BUSY at start — skip");
@@ -272,6 +288,8 @@ void bsRadioStartRxTimeout(uint32_t timeoutRtcSteps,
     bsSavedModParams = modParams;
     bsSavedPktParams = pktParams;
     bsSavedIsLR     = isLR;
+    extern int64_t bsRxIssuedUs;
+    bsRxIssuedUs = esp_timer_get_time();
     bsLedOn();
     if (LOG_RX_START) {
       int64_t s = bsGetSlotIndex();
@@ -537,15 +555,13 @@ static void bsRadioHandleIrq() {
   if (irqFlags & SX126X_IRQ_RX_DONE) {
     bsRadioState = BS_RADIO_STANDBY;
     if (bsSavedIsLR) applyImplicitHeaderErrataFix();
-    // SX1262 sets RX_DONE alongside CRC_ERROR/HEADER_ERROR for failed packets.
-    // Skip buffer read+drift-EMA in that case — the payload is garbage and would
-    // poison the sync anchor.
-    if (!(irqFlags & (SX126X_IRQ_CRC_ERROR | SX126X_IRQ_HEADER_ERROR))) {
-      bsHandleRxDone(eventUs);
-    }
+    bsHandleRxDone(eventUs);
     bsLedOff();
     if (LOG_RX_DONE) {
-      Serial.print("BS RxDone: slot="); Serial.println((long long)bsGetSlotIndex());
+      int64_t durUs = (int64_t)eventUs - bsRxIssuedUs;
+      Serial.print("BS RxDone: slot="); Serial.print((long long)bsGetSlotIndex());
+      Serial.print(" rxDurUs="); Serial.print((long long)durUs);
+      Serial.print(" irqFlags=0x"); Serial.println((unsigned)irqFlags, HEX);
     }
   }
 
@@ -554,7 +570,9 @@ static void bsRadioHandleIrq() {
     if (bsSavedIsLR) applyImplicitHeaderErrataFix();
     bsLedOff();
     if (LOG_RX_TIMEOUT) {
-      Serial.print("BS RxTimeout: slot="); Serial.println((long long)bsGetSlotIndex());
+      int64_t durUs = (int64_t)eventUs - bsRxIssuedUs;
+      Serial.print("BS RxTimeout: slot="); Serial.print((long long)bsGetSlotIndex());
+      Serial.print(" rxDurUs="); Serial.println((long long)durUs);
     }
 
     // If searching, restart infinite-timeout RX on same channel.
@@ -568,7 +586,8 @@ static void bsRadioHandleIrq() {
     bsLedOff();
     if (irqFlags & SX126X_IRQ_CRC_ERROR)    Serial.print("BS RX: CRC_ERROR ");
     if (irqFlags & SX126X_IRQ_HEADER_ERROR) Serial.print("BS RX: HEADER_ERROR ");
-    Serial.print("slot="); Serial.println((long long)bsGetSlotIndex());
+    Serial.print("slot="); Serial.print((long long)bsGetSlotIndex());
+    Serial.print(" irqFlags=0x"); Serial.println((unsigned)irqFlags, HEX);
   }
 
   if (irqFlags == 0) {

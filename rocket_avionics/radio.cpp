@@ -290,13 +290,16 @@ bool radioStartTx(const uint8_t* pkt, size_t len,
                   const sx126x_pkt_params_lora_t& pktParams,
                   bool isLR) {
   if (LOG_TX_START) {
+    int64_t now = esp_timer_get_time();
     int64_t s = radioGetSlotIndex();
+    int64_t slotStart = syncAnchorUs + (s - syncSeedSlotIndex) * (int64_t)SLOT_DURATION_US;
     uint8_t seqIdx = (uint8_t)(((uint64_t)(s - syncSeedSlotIndex)) % SLOT_SEQUENCE_LEN);
     Serial.print("TxAttempt: slot="); Serial.print((long long)s);
     Serial.print(" seq="); Serial.print(seqIdx);
     Serial.print(" win="); Serial.print(windowModeName(SLOT_SEQUENCE[seqIdx]));
     Serial.print(" ch="); Serial.print(currentTunedChannel);
     Serial.print(" len="); Serial.print((unsigned)len);
+    Serial.print(" intoSlotUs="); Serial.print((long long)(now - slotStart));
     Serial.print(" busy="); Serial.println(digitalRead(LORA_BUSY_PIN));
   }
   if (digitalRead(LORA_BUSY_PIN)) {
@@ -451,11 +454,7 @@ static void radioHandleIrq() {
     if (LOG_RX_DONE) {
       Serial.print("RxDone: slot="); Serial.println((long long)eventSlotIdx);
     }
-    // SX1262 sets RX_DONE alongside CRC_ERROR/HEADER_ERROR for failed packets;
-    // skip buffer read in that case — the payload is garbage.
-    if (!(irqFlags & (SX126X_IRQ_CRC_ERROR | SX126X_IRQ_HEADER_ERROR))) {
-      handleRxDone();
-    }
+    handleRxDone();
     ledOff();
   }
 
