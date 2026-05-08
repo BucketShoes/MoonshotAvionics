@@ -34,14 +34,7 @@
 
 #define FAVORITE_ROCKET_DEVICE_ID  ROCKET_DEVICE_ID
 
-// ===================== DEBUG LOG FLAGS =====================
-// Local debug switches — may differ between rocket and base.
-
-#define LOG_RX_DONE    true
-#define LOG_RX_TIMEOUT true
-#define LOG_RX_START   true
-#define LOG_TX_START   true
-#define LOG_TX_DONE    true
+// Debug log flags moved to common/radio_config.h (LOG_BS_*)
 
 // ===================== RADIO STATE =====================
 

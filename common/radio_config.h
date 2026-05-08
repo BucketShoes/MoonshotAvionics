@@ -11,7 +11,7 @@
 
 // ===================== SLOT TIMING =====================
 
-#define SLOT_DURATION_US  1'000'000UL //changed - temporary value for debug. This value is often changed independently - do not rely on this being a particular value (e.g. calculate duration-gap, not just hardcode a derived number slightly less than this)
+#define SLOT_DURATION_US  500'000UL //changed - temporary value for debug. This value is often changed independently - do not rely on this being a particular value (e.g. calculate duration-gap, not just hardcode a derived number slightly less than this)
 
 // ===================== SLOT TYPES =====================
 // Values are fixed wire constants — do not renumber.
@@ -116,6 +116,42 @@ extern uint8_t hopSeq[NUM_HOP_CHANNELS];
 #define BS_CANDIDATE_TIMEOUT_MS  30'000UL
 #define BS_IN_SYNC_TIMING_US     50'000UL
 #define BS_IN_SYNC_TIMEOUT_US    125'000'000UL
+
+// ===================== DEBUG LOG FLAGS =====================
+// Per-side flags so rocket and base can be tuned independently. Each is a
+// compile-time bool so the compiler can drop the log statement when off.
+//
+// _ATTEMPT — every loop iteration that tries to start RX/TX (pre-BUSY check).
+// _START   — fires after set_rx/set_tx succeeds.
+// _DONE    — DIO1 IRQ reports completion.
+// _TIMEOUT — DIO1 IRQ reports timeout.
+// _OVERRUN — overrun / BUSY-at-boundary / forced-standby diagnostic lines.
+// _HB      — periodic state heartbeat (1Hz) inside the slot machine.
+// _SETNEXT — every time the slot-machine schedules its next action.
+
+// Rocket
+#define LOG_RK_RX_ATTEMPT  true
+#define LOG_RK_RX_START    true
+#define LOG_RK_RX_DONE     true
+#define LOG_RK_RX_TIMEOUT  true
+#define LOG_RK_TX_ATTEMPT  true
+#define LOG_RK_TX_START    true
+#define LOG_RK_TX_DONE     true
+#define LOG_RK_OVERRUN     true
+#define LOG_RK_HB          true
+#define LOG_RK_SETNEXT     true
+
+// Base station
+#define LOG_BS_RX_ATTEMPT  true
+#define LOG_BS_RX_START    true
+#define LOG_BS_RX_DONE     true
+#define LOG_BS_RX_TIMEOUT  true
+#define LOG_BS_TX_ATTEMPT  true
+#define LOG_BS_TX_START    true
+#define LOG_BS_TX_DONE     true
+#define LOG_BS_OVERRUN     true
+#define LOG_BS_HB          false
+#define LOG_BS_SETNEXT     false
 
 // ===================== HMAC =====================
 

@@ -236,7 +236,7 @@ void radioStartRxTimeout(uint32_t timeoutRtcSteps,
                          const sx126x_mod_params_lora_t& modParams,
                          const sx126x_pkt_params_lora_t& pktParams,
                          bool isLR) {
-  if (LOG_RX_START) {
+  if (LOG_RK_RX_ATTEMPT) {
     int64_t s = radioGetSlotIndex();
     uint8_t seqIdx = (uint8_t)(((uint64_t)(s - syncSeedSlotIndex)) % SLOT_SEQUENCE_LEN);
     Serial.print("RxAttempt: slot="); Serial.print((long long)s);
@@ -246,7 +246,7 @@ void radioStartRxTimeout(uint32_t timeoutRtcSteps,
     Serial.print(" busy="); Serial.println(digitalRead(LORA_BUSY_PIN));
   }
   if (digitalRead(LORA_BUSY_PIN)) {
-    if (LOG_RX_START) Serial.println("RX: BUSY at start — skip");
+    if (LOG_RK_RX_ATTEMPT) Serial.println("RX: BUSY at start — skip");
     return;
   }
 
@@ -268,7 +268,7 @@ void radioStartRxTimeout(uint32_t timeoutRtcSteps,
     savedPktParams  = pktParams;
     savedIsLR       = isLR;
     ledOnRX();
-    if (LOG_RX_START) {
+    if (LOG_RK_RX_START) {
       int64_t s = radioGetSlotIndex();
       uint8_t seqIdx = (uint8_t)(((uint64_t)(s - syncSeedSlotIndex)) % SLOT_SEQUENCE_LEN);
       Serial.print("RxStart: slot="); Serial.print((long long)s);
@@ -289,7 +289,7 @@ bool radioStartTx(const uint8_t* pkt, size_t len,
                   const sx126x_mod_params_lora_t& modParams,
                   const sx126x_pkt_params_lora_t& pktParams,
                   bool isLR) {
-  if (LOG_TX_START) {
+  if (LOG_RK_TX_ATTEMPT) {
     int64_t now = esp_timer_get_time();
     int64_t s = radioGetSlotIndex();
     int64_t slotStart = syncAnchorUs + (s - syncSeedSlotIndex) * (int64_t)SLOT_DURATION_US;
@@ -303,7 +303,7 @@ bool radioStartTx(const uint8_t* pkt, size_t len,
     Serial.print(" busy="); Serial.println(digitalRead(LORA_BUSY_PIN));
   }
   if (digitalRead(LORA_BUSY_PIN)) {
-    if (LOG_TX_START) Serial.println("TX: BUSY — skip");
+    if (LOG_RK_TX_ATTEMPT) Serial.println("TX: BUSY — skip");
     return false;
   }
 
@@ -343,7 +343,7 @@ bool radioStartTx(const uint8_t* pkt, size_t len,
     savedPktParams = ppTx;
     savedIsLR      = isLR;
     ledOnTX();
-    if (LOG_TX_START) {
+    if (LOG_RK_TX_START) {
       int64_t s = radioGetSlotIndex();
       uint8_t seqIdx = (uint8_t)(((uint64_t)(s - syncSeedSlotIndex)) % SLOT_SEQUENCE_LEN);
       Serial.print("TxStart: slot="); Serial.print((long long)s);
@@ -443,7 +443,7 @@ static void radioHandleIrq() {
 #endif
     radioState = RADIO_STANDBY;
     ledOff();
-    if (LOG_TX_DONE) {
+    if (LOG_RK_TX_DONE) {
       Serial.print("TxDone: slot="); Serial.println((long long)eventSlotIdx);
     }
   }
@@ -451,7 +451,7 @@ static void radioHandleIrq() {
   if (irqFlags & SX126X_IRQ_RX_DONE) {
     radioState = RADIO_STANDBY;
     if (savedIsLR) applyImplicitHeaderErrataFix();
-    if (LOG_RX_DONE) {
+    if (LOG_RK_RX_DONE) {
       Serial.print("RxDone: slot="); Serial.println((long long)eventSlotIdx);
     }
     handleRxDone();
@@ -462,7 +462,7 @@ static void radioHandleIrq() {
     radioState = RADIO_STANDBY;
     if (savedIsLR) applyImplicitHeaderErrataFix();
     ledOff();
-    if (LOG_RX_TIMEOUT) {
+    if (LOG_RK_RX_TIMEOUT) {
       Serial.print("RxTimeout: slot="); Serial.println((long long)eventSlotIdx);
     }
   }
@@ -517,10 +517,12 @@ static int64_t nextActionSlotIndex = 0;
 
 // Log whenever nextActionUs is reassigned, so we can see if it ever leaps far ahead.
 static inline void setNextAction(int64_t newUs, int64_t newSlot, const char* reason) {
-  int64_t now = esp_timer_get_time();
-  Serial.print("RADIO: setNext "); Serial.print(reason);
-  Serial.print(" slot="); Serial.print((long long)newSlot);
-  Serial.print(" inUs="); Serial.println((long long)(newUs - now));
+  if (LOG_RK_SETNEXT) {
+    int64_t now = esp_timer_get_time();
+    Serial.print("RADIO: setNext "); Serial.print(reason);
+    Serial.print(" slot="); Serial.print((long long)newSlot);
+    Serial.print(" inUs="); Serial.println((long long)(newUs - now));
+  }
   nextActionUs        = newUs;
   nextActionSlotIndex = newSlot;
 }
@@ -562,7 +564,7 @@ void nonblockingRadio() {
   // Periodic visibility ping — prints once per second so we can see why the
   // slot machine isn't firing actions even when no overrun/busy logs appear.
   static int64_t lastHeartbeatUs = 0;
-  if ((now - lastHeartbeatUs) > 1'000'000) {
+  if (LOG_RK_HB && (now - lastHeartbeatUs) > 1'000'000) {
     lastHeartbeatUs = now;
     Serial.print("RADIO: hb slot="); Serial.print((long long)slotIndex);
     Serial.print(" seq="); Serial.print(seqIdx);
@@ -608,7 +610,7 @@ void nonblockingRadio() {
   if (isOverrun) {
     unexpectedOverruns++;
     overrunSinceLog++;
-    if ((now - lastOverrunLogUs) > 1'000'000) {
+    if (LOG_RK_OVERRUN && (now - lastOverrunLogUs) > 1'000'000) {
       Serial.print("RADIO: overrun win="); Serial.print((int)win);
       Serial.print(" consec="); Serial.print(unexpectedOverruns);
       Serial.print(" totalSinceLog="); Serial.print(overrunSinceLog);
@@ -617,7 +619,7 @@ void nonblockingRadio() {
       overrunSinceLog  = 0;
     }
     if (unexpectedOverruns >= 3) {
-      Serial.println("RADIO: 3 overruns — forcing standby");
+      if (LOG_RK_OVERRUN) Serial.println("RADIO: 3 overruns — forcing standby");
       radioStandby();
       unexpectedOverruns = 0;
     }
@@ -629,7 +631,7 @@ void nonblockingRadio() {
   if (digitalRead(LORA_BUSY_PIN)) {
     unexpectedOverruns++;
     busySinceLog++;
-    if ((now - lastBusyLogUs) > 1'000'000) {
+    if (LOG_RK_OVERRUN && (now - lastBusyLogUs) > 1'000'000) {
       Serial.print("RADIO: BUSY at boundary consec="); Serial.print(unexpectedOverruns);
       Serial.print(" totalSinceLog="); Serial.print(busySinceLog);
       Serial.print(" slot="); Serial.println((long long)slotIndex);
@@ -637,7 +639,7 @@ void nonblockingRadio() {
       busySinceLog  = 0;
     }
     if (unexpectedOverruns >= 3) {
-      Serial.println("RADIO: BUSY stuck 3 slots — forcing standby");
+      if (LOG_RK_OVERRUN) Serial.println("RADIO: BUSY stuck 3 slots — forcing standby");
       radioStandby();
       unexpectedOverruns = 0;
       setNextAction(slotEndUsFor(slotIndex), slotIndex + 1, "busy3");

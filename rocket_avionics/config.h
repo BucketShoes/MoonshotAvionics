@@ -34,14 +34,7 @@
 #define PYRO_HV_PRESENT_MV    2750
 #define PYRO_HV_DIVIDER_RATIO 11
 
-// ===================== DEBUG LOG FLAGS =====================
-// These are local debug switches; the two firmwares can choose independently.
-
-#define LOG_RX_DONE     true
-#define LOG_RX_TIMEOUT  true
-#define LOG_RX_START    true
-#define LOG_TX_START    true
-#define LOG_TX_DONE     true
+// Debug log flags moved to common/radio_config.h (LOG_RK_*)
 #define LOG_APPLYCFG    true
 
 // ===================== SLOT CONFIG STRUCT =====================
