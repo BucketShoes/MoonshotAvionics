@@ -11,7 +11,8 @@
 
 // ===================== SLOT TIMING =====================
 
-#define SLOT_DURATION_US  (250'000UL/*TEMPORARY FOR DEBUGGING X4*/ *2UL) //This value is often changed independently - do not rely on this being a particular value (e.g. calculate duration-gap, not just hardcode a derived number slightly less than this)
+//#define SLOT_DURATION_US  250'000UL//This value is often changed independently - do not rely on this being a particular value (e.g. calculate duration-gap, not just hardcode a derived number slightly less than this)
+#define SLOT_DURATION_US  500'000UL //This value is often changed independently - do not rely on this being a particular value (e.g. calculate duration-gap, not just hardcode a derived number slightly less than this)
 
 // ===================== SLOT TYPES =====================
 // Values are fixed wire constants — do not renumber.
