@@ -242,14 +242,17 @@ void bsRadioStartRxTimeout(uint32_t timeoutRtcSteps,
                             const sx126x_mod_params_lora_t& modParams,
                             const sx126x_pkt_params_lora_t& pktParams,
                             bool isLR) {
+  if (LOG_RX_START) {
+    int64_t s = bsGetSlotIndex();
+    uint8_t seqIdx = (uint8_t)(((uint64_t)(s - bsSyncSeedSlotIndex)) % SLOT_SEQUENCE_LEN);
+    Serial.print("BS RxAttempt: slot="); Serial.print((long long)s);
+    Serial.print(" seq="); Serial.print(seqIdx);
+    Serial.print(" win="); Serial.print(windowModeName(SLOT_SEQUENCE[seqIdx]));
+    Serial.print(" ch="); Serial.print(currentTunedChannel);
+    Serial.print(" busy="); Serial.println(digitalRead(LORA_BUSY_PIN));
+  }
   if (digitalRead(LORA_BUSY_PIN)) {
-    static int64_t lastLogUs = 0; static uint32_t skipped = 0;
-    skipped++;
-    int64_t nowL = esp_timer_get_time();
-    if (nowL - lastLogUs > 1'000'000) {
-      Serial.print("BS RX: BUSY at start — skipped="); Serial.println(skipped);
-      lastLogUs = nowL; skipped = 0;
-    }
+    if (LOG_RX_START) Serial.println("BS RX: BUSY at start — skip");
     return;
   }
 
@@ -288,14 +291,18 @@ void bsRadioStartRxTimeout(uint32_t timeoutRtcSteps,
 }
 
 bool bsRadioStartTx(const uint8_t* pkt, size_t len) {
+  if (LOG_TX_START) {
+    int64_t s = bsGetSlotIndex();
+    uint8_t seqIdx = (uint8_t)(((uint64_t)(s - bsSyncSeedSlotIndex)) % SLOT_SEQUENCE_LEN);
+    Serial.print("BS TxAttempt: slot="); Serial.print((long long)s);
+    Serial.print(" seq="); Serial.print(seqIdx);
+    Serial.print(" win="); Serial.print(windowModeName(SLOT_SEQUENCE[seqIdx]));
+    Serial.print(" ch="); Serial.print(currentTunedChannel);
+    Serial.print(" len="); Serial.print((unsigned)len);
+    Serial.print(" busy="); Serial.println(digitalRead(LORA_BUSY_PIN));
+  }
   if (digitalRead(LORA_BUSY_PIN)) {
-    static int64_t lastLogUs = 0; static uint32_t skipped = 0;
-    skipped++;
-    int64_t nowL = esp_timer_get_time();
-    if (nowL - lastLogUs > 1'000'000) {
-      Serial.print("BS TX: BUSY — dropped="); Serial.println(skipped);
-      lastLogUs = nowL; skipped = 0;
-    }
+    if (LOG_TX_START) Serial.println("BS TX: BUSY — skip");
     return false;
   }
 
@@ -541,12 +548,6 @@ static void bsRadioHandleIrq() {
     bsRadioState = BS_RADIO_STANDBY;
     if (bsSavedIsLR) applyImplicitHeaderErrataFix();
     bsLedOff();
-    static unsigned long bsRxTimeoutCountTotal = 0;
-    bsRxTimeoutCountTotal++;
-    if (bsRxTimeoutCountTotal % 10 == 0) {
-      Serial.print("BS RX_TIMEOUT (count="); Serial.print(bsRxTimeoutCountTotal);
-      Serial.println(")");
-    }
     if (LOG_RX_TIMEOUT) {
       Serial.print("BS RxTimeout: slot="); Serial.println((long long)bsGetSlotIndex());
     }
@@ -560,24 +561,14 @@ static void bsRadioHandleIrq() {
   if (irqFlags & (SX126X_IRQ_CRC_ERROR | SX126X_IRQ_HEADER_ERROR)) {
     bsRadioState = BS_RADIO_STANDBY;
     bsLedOff();
-    static unsigned long lastRxErrLogMs = 0;
-    unsigned long nowMs = millis();
-    if (nowMs - lastRxErrLogMs >= 5000) {
-      lastRxErrLogMs = nowMs;
-      if (irqFlags & SX126X_IRQ_CRC_ERROR)    Serial.print("BS RX: CRC_ERROR ");
-      if (irqFlags & SX126X_IRQ_HEADER_ERROR) Serial.print("BS RX: HEADER_ERROR ");
-      Serial.println();
-    }
+    if (irqFlags & SX126X_IRQ_CRC_ERROR)    Serial.print("BS RX: CRC_ERROR ");
+    if (irqFlags & SX126X_IRQ_HEADER_ERROR) Serial.print("BS RX: HEADER_ERROR ");
+    Serial.print("slot="); Serial.println((long long)bsGetSlotIndex());
   }
 
   if (irqFlags == 0) {
-    static unsigned long lastSpuriousLogMs = 0;
-    unsigned long nowMs = millis();
-    if (nowMs - lastSpuriousLogMs >= 1000) {
-      lastSpuriousLogMs = nowMs;
-      Serial.print("BS IRQ: flags=0 state="); Serial.print(bsRadioState);
-      Serial.print(" BUSY="); Serial.println(digitalRead(LORA_BUSY_PIN));
-    }
+    Serial.print("BS IRQ: flags=0 state="); Serial.print(bsRadioState);
+    Serial.print(" BUSY="); Serial.println(digitalRead(LORA_BUSY_PIN));
   }
 }
 
@@ -754,56 +745,29 @@ void bsHandleRadio() {
   // Not yet time to start this slot's action.
   if (now < actionStartUs) return;
 
-  // Radio still mid-action from a previous slot (typical: telem RX that hasn't
-  // timed out yet). Don't start a new action — wait for DIO1 / IRQ to clear.
-  if (bsRadioState != BS_RADIO_STANDBY) {
-    static int64_t lastBusyStateLogUs = 0;
-    if ((now - lastBusyStateLogUs) > 1'000'000) {
-      Serial.print("BS RADIO: skip slot="); Serial.print((long long)slotIndex);
-      Serial.print(" win="); Serial.print(windowModeName(win));
-      Serial.print(" rstate="); Serial.println((int)bsRadioState);
-      lastBusyStateLogUs = now;
-    }
-    bsLastActionStartedSlot = slotIndex;
-    return;
-  }
-
   // How much time remains before the next action must begin? That's our timeout.
   int64_t remainUs = nextActionStartUs - now;
   if (remainUs < (int64_t)BS_RX_MIN_REMAINING_US) {
-    // Too late / not enough time for a useful RX. Skip this slot.
     bsUnexpectedOverruns++;
-    bsOverrunSinceLog++;
-    if ((now - bsLastOverrunLogUs) > 1'000'000) {
-      Serial.print("BS RADIO: overrun win="); Serial.print(windowModeName(win));
-      Serial.print(" consec="); Serial.print(bsUnexpectedOverruns);
-      Serial.print(" totalSinceLog="); Serial.print(bsOverrunSinceLog);
-      Serial.print(" slot="); Serial.print((long long)slotIndex);
-      Serial.print(" remainUs="); Serial.println((long long)remainUs);
-      bsLastOverrunLogUs = now;
-      bsOverrunSinceLog  = 0;
-    }
+    Serial.print("BS RADIO: overrun win="); Serial.print(windowModeName(win));
+    Serial.print(" consec="); Serial.print(bsUnexpectedOverruns);
+    Serial.print(" slot="); Serial.print((long long)slotIndex);
+    Serial.print(" remainUs="); Serial.println((long long)remainUs);
     if (bsUnexpectedOverruns >= BS_OVERRUN_MAX) {
       Serial.println("BS RADIO: 3 overruns — forcing standby");
       bsRadioStandby();
       bsUnexpectedOverruns = 0;
     }
-    bsLastActionStartedSlot = slotIndex;  // mark as "handled" so we move on
+    bsLastActionStartedSlot = slotIndex;
     return;
   }
 
   // BUSY check — radio mid-action from previous slot.
   if (digitalRead(LORA_BUSY_PIN)) {
     bsUnexpectedOverruns++;
-    bsBusySinceLog++;
-    if ((now - bsLastBusyLogUs) > 1'000'000) {
-      Serial.print("BS RADIO: BUSY at boundary consec="); Serial.print(bsUnexpectedOverruns);
-      Serial.print(" totalSinceLog="); Serial.print(bsBusySinceLog);
-      Serial.print(" slot="); Serial.print((long long)slotIndex);
-      Serial.print(" win="); Serial.println(windowModeName(win));
-      bsLastBusyLogUs = now;
-      bsBusySinceLog  = 0;
-    }
+    Serial.print("BS RADIO: BUSY at boundary consec="); Serial.print(bsUnexpectedOverruns);
+    Serial.print(" slot="); Serial.print((long long)slotIndex);
+    Serial.print(" win="); Serial.println(windowModeName(win));
     if (bsUnexpectedOverruns >= BS_OVERRUN_MAX) {
       Serial.println("BS RADIO: BUSY stuck — forcing standby");
       bsRadioStandby();
