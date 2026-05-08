@@ -580,10 +580,13 @@ void nonblockingRadio() {
     Serial.print(" seed="); Serial.println((long long)syncSeedSlotIndex);
   }
 
-  // Only the windows we actively handle take any action. Every other value
-  // (CONTINUE, GFSK, RDF, ...) is a no-op: don't count overruns, don't touch
-  // the radio, don't update bookkeeping.
-  if (win != WIN_TELEM && win != WIN_LR && win != WIN_CMD) return;
+  // WIN_CONTINUE: no radio action, no overrun counting. Just advance nextActionUs.
+  if (win == WIN_CONTINUE) {
+    if (slotIndex != nextActionSlotIndex) {
+      setNextAction(slotEndUsFor(slotIndex), slotIndex, "CONTINUE");
+    }
+    return;
+  }
 
   // Not yet time for the next action — int64 signed subtraction.
   if (now < nextActionUs) return;

@@ -655,8 +655,7 @@ static inline int64_t bsSlotStartUsFor(int64_t slotIndex) {
 
 // Compute the absolute timestamp at which the action for the given slot is supposed
 // to BEGIN. Accounts for early-RX (telem/LR/CMD-listen) and late-TX (cmd dispatch)
-// offsets. Undefined windows (CONTINUE, GFSK, ...) return slot start; callers using
-// this for deadline calculation will see the next slot's boundary either way.
+// offsets. WIN_CONTINUE has no action; caller must skip it before calling this.
 static inline int64_t bsActionStartUsFor(int64_t slotIndex, WindowMode win) {
   int64_t slotStart = bsSlotStartUsFor(slotIndex);
   switch (win) {
@@ -746,10 +745,7 @@ void bsHandleRadio() {
   // implementation; CRT-style coupling has been removed.
   uint8_t  ch        = hopChannel((uint32_t)(slotIndex - bsSyncSeedSlotIndex));
 
-  // Only the windows we actively handle take any action. Every other value
-  // (CONTINUE, GFSK, RDF, ...) is a no-op: don't count overruns, don't touch
-  // the radio, don't update bookkeeping.
-  if (win != WIN_TELEM && win != WIN_LR && win != WIN_CMD && win != WIN_OFF) return;
+  if (win == WIN_CONTINUE) return;
 
   // Compute when this slot's action is supposed to begin. Skip forward through
   // already-acted-on slots; an action might already be underway from the previous
@@ -760,10 +756,14 @@ void bsHandleRadio() {
   if (bsLastActionStartedSlot == slotIndex) return;
 
   // Compute when the NEXT slot's action would start — this gives our action's hard
-  // deadline. WIN_CONTINUE is treated like any other window here: it occupies its
-  // slot. If our action overruns into it, that's normal overrun handling.
+  // deadline (we must finish before the next radio action begins).
   int64_t nextSlot = slotIndex + 1;
+  // skip WIN_CONTINUE when computing next-action-start (continue = no action)
   WindowMode nextWin = SLOT_SEQUENCE[(uint8_t)(((uint64_t)(nextSlot - bsSyncSeedSlotIndex)) % SLOT_SEQUENCE_LEN)];
+  while (nextWin == WIN_CONTINUE) {
+    nextSlot++;
+    nextWin = SLOT_SEQUENCE[(uint8_t)(((uint64_t)(nextSlot - bsSyncSeedSlotIndex)) % SLOT_SEQUENCE_LEN)];
+  }
   int64_t nextActionStartUs = bsActionStartUsFor(nextSlot, nextWin);
 
   // Not yet time to start this slot's action.
