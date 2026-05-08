@@ -316,13 +316,6 @@ bool queueCommandTx(const uint8_t* body, size_t bodyLen, String& errorMsg) {
     bsNvs.putUInt("nonce", highestNonce);
   }
 
-  // DEBUG: hijack CMD_SET_SYNC to trigger local passive scan instead of TX.
-  if (pktLen >= 3 && cmdTx.pkt[2] == CMD_SET_SYNC) {
-    Serial.println("CMD SET_SYNC: triggering passive scan (debug hijack)");
-    bsTriggerScan();
-    return true;
-  }
-
   cmdTx.pktLen = pktLen;
   cmdTx.sends = sends;
   cmdTx.sent = 0;
@@ -543,6 +536,14 @@ static void dispatchCmdTx() {
       bsRadioStandby();
       bsRadioApplyConfig_BLOCKING();
       // Slot machine resumes from standby automatically on next slot boundary.
+      return;
+    }
+
+    // SET_SYNC — trigger local passive scan. Also TX'd over the air so other
+    // base stations re-scan in sync.
+    if (cmdTx.pkt[2] == CMD_SET_SYNC) {
+      Serial.println("CMD SET_SYNC: triggering passive scan");
+      bsTriggerScan();
       return;
     }
   }
