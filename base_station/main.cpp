@@ -316,6 +316,13 @@ bool queueCommandTx(const uint8_t* body, size_t bodyLen, String& errorMsg) {
     bsNvs.putUInt("nonce", highestNonce);
   }
 
+  // DEBUG: hijack CMD_SET_SYNC to trigger local passive scan instead of TX.
+  if (pktLen >= 3 && cmdTx.pkt[2] == CMD_SET_SYNC) {
+    Serial.println("CMD SET_SYNC: triggering passive scan (debug hijack)");
+    bsTriggerScan();
+    return true;
+  }
+
   cmdTx.pktLen = pktLen;
   cmdTx.sends = sends;
   cmdTx.sent = 0;
