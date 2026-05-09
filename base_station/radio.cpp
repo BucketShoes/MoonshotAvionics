@@ -320,7 +320,7 @@ bool bsRadioInit() {
 
 void bsRadioApplyConfig_BLOCKING() {
   sx126x_status_t st;
-  sx126x_mod_params_lora_t mp = buildModParams(CFG_NORMAL);
+  sx126x_1mod_params_lora_t mp = buildModParams(CFG_NORMAL);
   st = sx126x_set_lora_mod_params(&bsRadioCtx, &mp);
   if (st != SX126X_STATUS_OK) { Serial.print("BS ApplyConfig: set_lora_mod_params st="); Serial.println(st); }
   DO_NOT_CALL_WHILE_ARMED_radioWaitBusy_WARNING_LONG_BLOCKING(&bsRadioCtx);

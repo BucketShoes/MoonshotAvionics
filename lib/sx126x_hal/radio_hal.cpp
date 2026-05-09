@@ -58,13 +58,22 @@ extern "C" sx126x_hal_status_t sx126x_hal_write(
                 }
             }
         } else {
-            // Runtime: slot window missed — drop immediately, never spin.
-            // Counter is dumped periodically from the main loop (see totalBusyWriteDrops).
-            totalBusyWriteDrops++;
-            lastDroppedOpcode   = (command_length > 0) ? command[0] : 0xFF;
-            lastDroppedAtMicros = micros();
-            lastDroppedWasWrite = true;
-            return SX126X_HAL_STATUS_ERROR;
+            // Runtime: spin briefly. The chip raises BUSY for tens of µs while it
+            // processes each command, and the driver routinely chains ops (e.g.
+            // set_lora_mod_params -> tx_modulation_workaround read). Without this
+            // short spin, every back-to-back op gets dropped. 100µs is well under
+            // the slot-timing budget but covers the typical command-processing
+            // window. Anything longer than that is treated as "slot window missed."
+            unsigned long t0 = micros();
+            while (digitalRead(c->busy)) {
+                if ((micros() - t0) >= 100) {
+                    totalBusyWriteDrops++;
+                    lastDroppedOpcode   = (command_length > 0) ? command[0] : 0xFF;
+                    lastDroppedAtMicros = micros();
+                    lastDroppedWasWrite = true;
+                    return SX126X_HAL_STATUS_ERROR;
+                }
+            }
         }
     }
 
@@ -124,13 +133,17 @@ extern "C" sx126x_hal_status_t sx126x_hal_read(
             // The flag is single-use — clear it so the next read is gated normally.
             const_cast<sx126x_hal_context_t*>(c)->allowBusyRead = false;
         } else {
-            // Runtime: slot window missed — drop immediately, never spin.
-            // Counter is dumped periodically from the main loop (see totalBusyReadDrops).
-            totalBusyReadDrops++;
-            lastDroppedOpcode   = (command_length > 0) ? command[0] : 0xFF;
-            lastDroppedAtMicros = micros();
-            lastDroppedWasWrite = false;
-            return SX126X_HAL_STATUS_ERROR;
+            // Runtime: short spin (see write path). Drop only if BUSY persists.
+            unsigned long t0 = micros();
+            while (digitalRead(c->busy)) {
+                if ((micros() - t0) >= 100) {
+                    totalBusyReadDrops++;
+                    lastDroppedOpcode   = (command_length > 0) ? command[0] : 0xFF;
+                    lastDroppedAtMicros = micros();
+                    lastDroppedWasWrite = false;
+                    return SX126X_HAL_STATUS_ERROR;
+                }
+            }
         }
     }
 
