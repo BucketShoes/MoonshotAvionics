@@ -91,18 +91,25 @@ static sx126x_pkt_params_lora_t buildPktParams(RadioCfg cfg, uint8_t pldLen) {
 // derived independently of slotIndex (user requirement: hop and slot are independent).
 static uint8_t currentTunedChannel = DEFAULT_CHANNEL;
 
+// Wait for BUSY pin to clear (the chip raises BUSY while it processes a command).
+// Returns true if BUSY went low within the timeout. Used between consecutive SPI
+// ops so the HAL doesn't drop the next command for "BUSY high."
+static bool waitBusyClear(uint32_t timeoutUs) {
+  unsigned long t0 = micros();
+  while (digitalRead(LORA_BUSY_PIN)) {
+    if ((micros() - t0) >= timeoutUs) return false;
+  }
+  return true;
+}
+
 // Returns true if the frequency was actually applied. The HAL drops SPI commands
 // when BUSY is high (returns SX126X_HAL_STATUS_ERROR -> non-OK sx126x_status_t).
-// Spin briefly for BUSY to clear, then issue and check the command. Only update
-// currentTunedChannel on success, otherwise we'd lie about what channel the
-// chip is on and the next set_rx would listen on the wrong frequency.
+// Spin briefly for BUSY to clear, issue, check return, then wait for BUSY again
+// because set_rf_freq itself raises BUSY while the chip retunes — the very next
+// SPI op (typically set_lora_mod_params) would otherwise be dropped.
 static bool applyFrequency(uint8_t ch) {
-  {
-    unsigned long t0 = micros();
-    while (digitalRead(LORA_BUSY_PIN) && (micros() - t0) < 100) {}
-  }
-  if (digitalRead(LORA_BUSY_PIN)) {
-    Serial.print("RK applyFrequency: BUSY stuck, freq NOT applied ch="); Serial.println(ch);
+  if (!waitBusyClear(200)) {
+    Serial.print("RK applyFrequency: BUSY stuck pre, freq NOT applied ch="); Serial.println(ch);
     return false;
   }
   float freqMHz = channelToFreqMHz(ch);
@@ -111,6 +118,11 @@ static bool applyFrequency(uint8_t ch) {
   if (st != SX126X_STATUS_OK) {
     Serial.print("RK applyFrequency: set_rf_freq rejected st="); Serial.print(st);
     Serial.print(" ch="); Serial.println(ch);
+    return false;
+  }
+  if (!waitBusyClear(200)) {
+    Serial.print("RK applyFrequency: BUSY stuck post-write ch="); Serial.println(ch);
+    currentTunedChannel = ch;
     return false;
   }
   currentTunedChannel = ch;
@@ -273,22 +285,23 @@ void radioStartRxTimeout(uint32_t timeoutRtcSteps,
   }
 
   // Apply modulation and packet params unconditionally — checking returns since
-  // the HAL silently drops SPI commands when BUSY is high.
+  // the HAL silently drops SPI commands when BUSY is high. Spin BUSY before
+  // each SPI op since the prior op (set_rf_freq, mod_params, etc.) raises BUSY
+  // briefly while the chip processes.
+  if (!waitBusyClear(200)) { Serial.println("RX: BUSY stuck pre mod_params"); return; }
   sx126x_status_t stMod = sx126x_set_lora_mod_params(&radioCtx, &modParams);
   if (stMod != SX126X_STATUS_OK) {
     Serial.print("RX: set_lora_mod_params rejected st="); Serial.println(stMod);
     return;  // would RX with stale modulation -> garbage demod
   }
-  {
-    unsigned long t0 = micros();
-    while (digitalRead(LORA_BUSY_PIN) && (micros() - t0) < 100) {}
-  }
+  if (!waitBusyClear(200)) { Serial.println("RX: BUSY stuck pre pkt_params"); return; }
   sx126x_status_t stPkt = sx126x_set_lora_pkt_params(&radioCtx, &pktParams);
   if (stPkt != SX126X_STATUS_OK) {
     Serial.print("RX: set_lora_pkt_params rejected st="); Serial.println(stPkt);
     return;
   }
 
+  if (!waitBusyClear(200)) { Serial.println("RX: BUSY stuck pre clear_irq"); return; }
   sx126x_status_t stClr = sx126x_clear_irq_status(&radioCtx, SX126X_IRQ_ALL);
   if (stClr != SX126X_STATUS_OK) {
     Serial.print("RX: clear_irq_status rejected st="); Serial.println(stClr);
@@ -296,6 +309,7 @@ void radioStartRxTimeout(uint32_t timeoutRtcSteps,
   }
   dio1Fired = false;
 
+  if (!waitBusyClear(200)) { Serial.println("RX: BUSY stuck pre set_rx"); return; }
   sx126x_status_t st = sx126x_set_rx_with_timeout_in_rtc_step(&radioCtx, timeoutRtcSteps);
   if (st == SX126X_STATUS_OK) {
     radioState      = RADIO_RX_ACTIVE;
@@ -347,16 +361,15 @@ bool radioStartTx(const uint8_t* pkt, size_t len,
   }
 
   // Apply modulation and packet params unconditionally — checking returns since
-  // the HAL silently drops SPI commands when BUSY is high.
+  // the HAL silently drops SPI commands when BUSY is high. Spin BUSY before
+  // each SPI op since the prior op raises BUSY briefly while the chip processes.
+  if (!waitBusyClear(200)) { Serial.println("TX: BUSY stuck pre mod_params"); return false; }
   sx126x_status_t stMod = sx126x_set_lora_mod_params(&radioCtx, &modParams);
   if (stMod != SX126X_STATUS_OK) {
     Serial.print("TX: set_lora_mod_params rejected st="); Serial.println(stMod);
     return false;
   }
-  {
-    unsigned long t0 = micros();
-    while (digitalRead(LORA_BUSY_PIN) && (micros() - t0) < 100) {}
-  }
+  if (!waitBusyClear(200)) { Serial.println("TX: BUSY stuck pre pkt_params"); return false; }
   // For TX, rebuild pkt params with actual payload length.
   sx126x_pkt_params_lora_t ppTx = pktParams;
   ppTx.pld_len_in_bytes = (uint8_t)len;
@@ -366,6 +379,7 @@ bool radioStartTx(const uint8_t* pkt, size_t len,
     return false;
   }
 
+  if (!waitBusyClear(200)) { Serial.println("TX: BUSY stuck pre clear_irq"); return false; }
   sx126x_status_t stClr = sx126x_clear_irq_status(&radioCtx, SX126X_IRQ_ALL);
   if (stClr != SX126X_STATUS_OK) {
     Serial.print("TX: clear_irq_status rejected st="); Serial.println(stClr);
@@ -373,14 +387,15 @@ bool radioStartTx(const uint8_t* pkt, size_t len,
   }
   dio1Fired = false;
 
+  if (!waitBusyClear(200)) { Serial.println("TX: BUSY stuck pre write_buffer"); return false; }
   sx126x_status_t st = sx126x_write_buffer(&radioCtx, 0, pkt, (uint8_t)len);
   if (st != SX126X_STATUS_OK) {
     Serial.print("TX: write_buffer fail st="); Serial.println(st);
     return false;
   }
 
-  if (digitalRead(LORA_BUSY_PIN)) {
-    Serial.println("TX: BUSY after write_buffer — abort");
+  if (!waitBusyClear(200)) {
+    Serial.println("TX: BUSY stuck pre set_tx — abort");
     return false;
   }
 
