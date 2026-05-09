@@ -60,6 +60,14 @@ extern volatile uint32_t dio1IsrCount;    // total ISR fires since boot (diagnos
 extern uint32_t totalBusyReadDrops;
 extern uint32_t totalBusyWriteDrops;
 
+// Diagnostic: details of the most recent dropped SPI call. Read these immediately
+// after seeing a non-OK status from sx126x_* to confirm whether the HAL was the
+// one that dropped it (and which command). Writes are not atomic — values may
+// be stale or torn if multiple drops happen between read and use.
+extern uint8_t  lastDroppedOpcode;
+extern uint32_t lastDroppedAtMicros;
+extern bool     lastDroppedWasWrite;
+
 // Microsecond timestamp of the most recent DIO1 rising edge.
 // Valid only while dio1Fired is true (or immediately after clearing it).
 inline uint64_t dio1TimestampUs() {

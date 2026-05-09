@@ -61,6 +61,9 @@ extern "C" sx126x_hal_status_t sx126x_hal_write(
             // Runtime: slot window missed — drop immediately, never spin.
             // Counter is dumped periodically from the main loop (see totalBusyWriteDrops).
             totalBusyWriteDrops++;
+            lastDroppedOpcode   = (command_length > 0) ? command[0] : 0xFF;
+            lastDroppedAtMicros = micros();
+            lastDroppedWasWrite = true;
             return SX126X_HAL_STATUS_ERROR;
         }
     }
@@ -91,6 +94,12 @@ uint32_t lastBusyDrop;
 uint32_t busyDrops;
 uint32_t totalBusyReadDrops = 0;
 uint32_t totalBusyWriteDrops = 0;
+
+// Diagnostic: last dropped command's opcode + when, so callers that see a
+// non-OK status can correlate it with the HAL's actual reason for dropping.
+uint8_t  lastDroppedOpcode    = 0;     // first byte of command buffer
+uint32_t lastDroppedAtMicros  = 0;     // micros() at the drop
+bool     lastDroppedWasWrite  = false; // true=write, false=read
 extern "C" sx126x_hal_status_t sx126x_hal_read(
     const void*    context,
     const uint8_t* command,
@@ -118,6 +127,9 @@ extern "C" sx126x_hal_status_t sx126x_hal_read(
             // Runtime: slot window missed — drop immediately, never spin.
             // Counter is dumped periodically from the main loop (see totalBusyReadDrops).
             totalBusyReadDrops++;
+            lastDroppedOpcode   = (command_length > 0) ? command[0] : 0xFF;
+            lastDroppedAtMicros = micros();
+            lastDroppedWasWrite = false;
             return SX126X_HAL_STATUS_ERROR;
         }
     }

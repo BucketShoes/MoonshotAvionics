@@ -94,12 +94,81 @@ static uint8_t currentTunedChannel = DEFAULT_CHANNEL;
 // Wait for BUSY pin to clear (the chip raises BUSY while it processes a command).
 // Returns true if BUSY went low within the timeout. Used between consecutive SPI
 // ops so the HAL doesn't drop the next command for "BUSY high."
-static bool waitBusyClear(uint32_t timeoutUs) {
+// Captures the µs spent waiting in *waitedUsOut (may be null) so callers can tell
+// "was already low" from "spun for ages and only just dropped".
+static bool waitBusyClear(uint32_t timeoutUs, uint32_t* waitedUsOut = nullptr) {
   unsigned long t0 = micros();
   while (digitalRead(LORA_BUSY_PIN)) {
-    if ((micros() - t0) >= timeoutUs) return false;
+    if ((micros() - t0) >= timeoutUs) {
+      if (waitedUsOut) *waitedUsOut = (uint32_t)(micros() - t0);
+      return false;
+    }
   }
+  if (waitedUsOut) *waitedUsOut = (uint32_t)(micros() - t0);
   return true;
+}
+
+// Rate-limit identical log lines. Pass a unique slot id (0..N-1, must be a
+// distinct constant per call site). Returns true if the caller should print
+// AND records the time. Suppressed lines are counted; when printing resumes,
+// the count is included in *suppressedOut so it can be appended to the message.
+//
+// Usage:
+//   uint32_t supp;
+//   if (logRate(LR_RX_MOD_REJECT, 1000, &supp)) {
+//     Serial.print("RX: set_lora_mod_params rejected st=3 (suppressed since="); Serial.print(supp); Serial.println(")");
+//   }
+static constexpr uint8_t LR_NUM_SLOTS = 16;
+static bool logRate(uint8_t slot, uint32_t intervalMs, uint32_t* suppressedOut = nullptr) {
+  static uint32_t lastMs[LR_NUM_SLOTS]    = {0};
+  static uint32_t supressed[LR_NUM_SLOTS] = {0};
+  if (slot >= LR_NUM_SLOTS) return true;  // unknown slot — print
+  uint32_t now = millis();
+  if (lastMs[slot] == 0 || (now - lastMs[slot]) >= intervalMs) {
+    if (suppressedOut) *suppressedOut = supressed[slot];
+    supressed[slot] = 0;
+    lastMs[slot] = now;
+    return true;
+  }
+  supressed[slot]++;
+  return false;
+}
+
+// Log-rate slot IDs for this file. Keep contiguous and < LR_NUM_SLOTS.
+enum : uint8_t {
+  LRSLOT_RX_ATTEMPT    = 0,
+  LRSLOT_RX_MOD_FAIL   = 1,
+  LRSLOT_RX_PKT_FAIL   = 2,
+  LRSLOT_RX_CLR_FAIL   = 3,
+  LRSLOT_RX_SETRX_FAIL = 4,
+  LRSLOT_TX_ATTEMPT    = 5,
+  LRSLOT_TX_MOD_FAIL   = 6,
+  LRSLOT_TX_PKT_FAIL   = 7,
+  LRSLOT_TX_CLR_FAIL   = 8,
+  LRSLOT_TX_WB_FAIL    = 9,
+  LRSLOT_TX_SETTX_FAIL = 10,
+  LRSLOT_BUSY_PRE_MOD  = 11,
+  LRSLOT_FREQ_FAIL     = 12,
+};
+
+// Print everything we know about a failed SPI op: caller-side BUSY samples,
+// HAL drop counters/opcode, time since last drop. This is the "what just
+// happened" diagnostic for status != OK.
+static void logSpiFail(const char* tag, sx126x_status_t st,
+                       uint32_t busyBefore, uint32_t waitedUs,
+                       uint32_t busyAfter,
+                       uint32_t hwReadDropsAtStart, uint32_t hwWriteDropsAtStart) {
+  Serial.print(tag);
+  Serial.print(" st="); Serial.print(st);
+  Serial.print(" busyPre="); Serial.print(busyBefore);
+  Serial.print(" waitUs="); Serial.print(waitedUs);
+  Serial.print(" busyAfter="); Serial.print(busyAfter);
+  Serial.print(" busyNow="); Serial.print(digitalRead(LORA_BUSY_PIN));
+  Serial.print(" newWriteDrops="); Serial.print(totalBusyWriteDrops - hwWriteDropsAtStart);
+  Serial.print(" newReadDrops="); Serial.print(totalBusyReadDrops - hwReadDropsAtStart);
+  Serial.print(" lastDropOp=0x"); Serial.print(lastDroppedOpcode, HEX);
+  Serial.print(" lastDropAgeUs="); Serial.print((uint32_t)(micros() - lastDroppedAtMicros));
+  Serial.println();
 }
 
 // Returns true if the frequency was actually applied. The HAL drops SPI commands
@@ -184,21 +253,28 @@ bool radioInit() {
     return false;
   }
 
-  sx126x_set_reg_mode(&radioCtx, SX126X_REG_MODE_DCDC);
-  sx126x_set_pkt_type(&radioCtx, SX126X_PKT_TYPE_LORA);
-  sx126x_set_dio2_as_rf_sw_ctrl(&radioCtx, true);
+  st = sx126x_set_reg_mode(&radioCtx, SX126X_REG_MODE_DCDC);
+  if (st != SX126X_STATUS_OK) { Serial.print("LoRa init: set_reg_mode st="); Serial.println(st); }
+  st = sx126x_set_pkt_type(&radioCtx, SX126X_PKT_TYPE_LORA);
+  if (st != SX126X_STATUS_OK) { Serial.print("LoRa init: set_pkt_type st="); Serial.println(st); }
+  st = sx126x_set_dio2_as_rf_sw_ctrl(&radioCtx, true);
+  if (st != SX126X_STATUS_OK) { Serial.print("LoRa init: set_dio2_as_rf_sw_ctrl st="); Serial.println(st); }
 
   const uint8_t syncWord[2] = { 0x14, 0x24 };
-  sx126x_write_register(&radioCtx, 0x0740, syncWord, 2);
+  st = sx126x_write_register(&radioCtx, 0x0740, syncWord, 2);
+  if (st != SX126X_STATUS_OK) { Serial.print("LoRa init: syncWord write st="); Serial.println(st); }
 
   radioApplyConfig_BLOCKING();
 
   sx126x_irq_mask_t irqMask = SX126X_IRQ_TX_DONE | SX126X_IRQ_RX_DONE | SX126X_IRQ_TIMEOUT |
                                SX126X_IRQ_CRC_ERROR | SX126X_IRQ_HEADER_ERROR;
-  sx126x_set_dio_irq_params(&radioCtx, irqMask, irqMask, SX126X_IRQ_NONE, SX126X_IRQ_NONE);
-  sx126x_clear_irq_status(&radioCtx, SX126X_IRQ_ALL);
+  st = sx126x_set_dio_irq_params(&radioCtx, irqMask, irqMask, SX126X_IRQ_NONE, SX126X_IRQ_NONE);
+  if (st != SX126X_STATUS_OK) { Serial.print("LoRa init: set_dio_irq_params st="); Serial.println(st); }
+  st = sx126x_clear_irq_status(&radioCtx, SX126X_IRQ_ALL);
+  if (st != SX126X_STATUS_OK) { Serial.print("LoRa init: clear_irq_status st="); Serial.println(st); }
 
-  sx126x_cfg_rx_boosted(&radioCtx, LORA_RX_BOOSTED);
+  st = sx126x_cfg_rx_boosted(&radioCtx, LORA_RX_BOOSTED);
+  if (st != SX126X_STATUS_OK) { Serial.print("LoRa init: cfg_rx_boosted st="); Serial.println(st); }
 
   radioMcpwmInit(LORA_DIO1_PIN);
 
@@ -209,27 +285,36 @@ bool radioInit() {
   Serial.print(" "); Serial.print(activeFreqMHz, 1); Serial.print("MHz SF");
   Serial.print(activeSF); Serial.print(" BW"); Serial.print((int)activeBwKHz);
   Serial.print("kHz pwr="); Serial.print(activePower); Serial.println("dBm");
+  Serial.print("RK HAL drops during init: write="); Serial.print(totalBusyWriteDrops);
+  Serial.print(" read="); Serial.print(totalBusyReadDrops);
+  Serial.print(" busyPin="); Serial.println(digitalRead(LORA_BUSY_PIN));
   return true;
 }
 
 void radioApplyConfig_BLOCKING() {
+  sx126x_status_t st;
   sx126x_mod_params_lora_t mp = buildModParams(CFG_NORMAL);
-  sx126x_set_lora_mod_params(&radioCtx, &mp);
+  st = sx126x_set_lora_mod_params(&radioCtx, &mp);
+  if (st != SX126X_STATUS_OK) { Serial.print("ApplyConfig: set_lora_mod_params st="); Serial.println(st); }
   DO_NOT_CALL_WHILE_ARMED_radioWaitBusy_WARNING_LONG_BLOCKING(&radioCtx);
 
   sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL,255);
-  sx126x_set_lora_pkt_params(&radioCtx, &pp);
+  st = sx126x_set_lora_pkt_params(&radioCtx, &pp);
+  if (st != SX126X_STATUS_OK) { Serial.print("ApplyConfig: set_lora_pkt_params st="); Serial.println(st); }
   DO_NOT_CALL_WHILE_ARMED_radioWaitBusy_WARNING_LONG_BLOCKING(&radioCtx);
 
   uint32_t freqHz = (uint32_t)(activeFreqMHz * 1e6f + 0.5f);
-  sx126x_set_rf_freq(&radioCtx, freqHz);
+  st = sx126x_set_rf_freq(&radioCtx, freqHz);
+  if (st != SX126X_STATUS_OK) { Serial.print("ApplyConfig: set_rf_freq st="); Serial.println(st); }
   DO_NOT_CALL_WHILE_ARMED_radioWaitBusy_WARNING_LONG_BLOCKING(&radioCtx);
 
   sx126x_pa_cfg_params_t paCfg = { .pa_duty_cycle = 0x04, .hp_max = 0x07, .device_sel = 0x00, .pa_lut = 0x01 };
-  sx126x_set_pa_cfg(&radioCtx, &paCfg);
+  st = sx126x_set_pa_cfg(&radioCtx, &paCfg);
+  if (st != SX126X_STATUS_OK) { Serial.print("ApplyConfig: set_pa_cfg st="); Serial.println(st); }
   DO_NOT_CALL_WHILE_ARMED_radioWaitBusy_WARNING_LONG_BLOCKING(&radioCtx);
 
-  sx126x_set_tx_params(&radioCtx, activePower, SX126X_RAMP_200_US);
+  st = sx126x_set_tx_params(&radioCtx, activePower, SX126X_RAMP_200_US);
+  if (st != SX126X_STATUS_OK) { Serial.print("ApplyConfig: set_tx_params st="); Serial.println(st); }
   DO_NOT_CALL_WHILE_ARMED_radioWaitBusy_WARNING_LONG_BLOCKING(&radioCtx);
 
   // Re-derive hop sequence in case activeChannel changed.
@@ -271,45 +356,80 @@ void radioStartRxTimeout(uint32_t timeoutRtcSteps,
                          const sx126x_pkt_params_lora_t& pktParams,
                          bool isLR,
                          int64_t slotIndex, uint8_t seqIdx, WindowMode win, uint8_t ch) {
-  if (LOG_RK_RX_ATTEMPT) {
+  uint32_t supp;
+  if (LOG_RK_RX_ATTEMPT && logRate(LRSLOT_RX_ATTEMPT, 1000, &supp)) {
     Serial.print("RxAttempt: slot="); Serial.print((long long)slotIndex);
     Serial.print(" seq="); Serial.print(seqIdx);
     Serial.print(" win="); Serial.print(windowModeName(win));
     Serial.print(" ch="); Serial.print(ch);
     Serial.print(" tunedCh="); Serial.print(currentTunedChannel);
-    Serial.print(" busy="); Serial.println(digitalRead(LORA_BUSY_PIN));
+    Serial.print(" busy="); Serial.print(digitalRead(LORA_BUSY_PIN));
+    Serial.print(" radioState="); Serial.print((int)radioState);
+    Serial.print(" supp="); Serial.println(supp);
   }
   if (digitalRead(LORA_BUSY_PIN)) {
     if (LOG_RK_RX_ATTEMPT) Serial.println("RX: BUSY at start — skip");
     return;
   }
 
+  // Capture HAL drop counters at entry — diff later to see how many drops
+  // happened during *this* call.
+  const uint32_t hwReadDropsAtStart  = totalBusyReadDrops;
+  const uint32_t hwWriteDropsAtStart = totalBusyWriteDrops;
+
   // Apply modulation and packet params unconditionally — checking returns since
   // the HAL silently drops SPI commands when BUSY is high. Spin BUSY before
   // each SPI op since the prior op (set_rf_freq, mod_params, etc.) raises BUSY
   // briefly while the chip processes.
-  if (!waitBusyClear(200)) { Serial.println("RX: BUSY stuck pre mod_params"); return; }
+  uint32_t waited = 0;
+  uint32_t busyBefore = digitalRead(LORA_BUSY_PIN);
+  if (!waitBusyClear(200, &waited)) {
+    if (logRate(LRSLOT_BUSY_PRE_MOD, 1000, &supp)) {
+      Serial.print("RX: BUSY stuck pre mod_params waitedUs="); Serial.print(waited);
+      Serial.print(" newWriteDrops="); Serial.print(totalBusyWriteDrops - hwWriteDropsAtStart);
+      Serial.print(" supp="); Serial.println(supp);
+    }
+    return;
+  }
+  uint32_t busyAfter = digitalRead(LORA_BUSY_PIN);
   sx126x_status_t stMod = sx126x_set_lora_mod_params(&radioCtx, &modParams);
   if (stMod != SX126X_STATUS_OK) {
-    Serial.print("RX: set_lora_mod_params rejected st="); Serial.println(stMod);
+    if (logRate(LRSLOT_RX_MOD_FAIL, 1000, &supp)) {
+      logSpiFail("RX: set_lora_mod_params FAIL", stMod, busyBefore, waited, busyAfter,
+                 hwReadDropsAtStart, hwWriteDropsAtStart);
+      Serial.print("    suppressed="); Serial.println(supp);
+    }
     return;  // would RX with stale modulation -> garbage demod
   }
-  if (!waitBusyClear(200)) { Serial.println("RX: BUSY stuck pre pkt_params"); return; }
+  if (!waitBusyClear(200)) {
+    if (logRate(LRSLOT_RX_PKT_FAIL, 1000)) Serial.println("RX: BUSY stuck pre pkt_params");
+    return;
+  }
   sx126x_status_t stPkt = sx126x_set_lora_pkt_params(&radioCtx, &pktParams);
   if (stPkt != SX126X_STATUS_OK) {
-    Serial.print("RX: set_lora_pkt_params rejected st="); Serial.println(stPkt);
+    if (logRate(LRSLOT_RX_PKT_FAIL, 1000)) {
+      Serial.print("RX: set_lora_pkt_params rejected st="); Serial.println(stPkt);
+    }
     return;
   }
 
-  if (!waitBusyClear(200)) { Serial.println("RX: BUSY stuck pre clear_irq"); return; }
+  if (!waitBusyClear(200)) {
+    if (logRate(LRSLOT_RX_CLR_FAIL, 1000)) Serial.println("RX: BUSY stuck pre clear_irq");
+    return;
+  }
   sx126x_status_t stClr = sx126x_clear_irq_status(&radioCtx, SX126X_IRQ_ALL);
   if (stClr != SX126X_STATUS_OK) {
-    Serial.print("RX: clear_irq_status rejected st="); Serial.println(stClr);
+    if (logRate(LRSLOT_RX_CLR_FAIL, 1000)) {
+      Serial.print("RX: clear_irq_status rejected st="); Serial.println(stClr);
+    }
     return;
   }
   dio1Fired = false;
 
-  if (!waitBusyClear(200)) { Serial.println("RX: BUSY stuck pre set_rx"); return; }
+  if (!waitBusyClear(200)) {
+    if (logRate(LRSLOT_RX_SETRX_FAIL, 1000)) Serial.println("RX: BUSY stuck pre set_rx");
+    return;
+  }
   sx126x_status_t st = sx126x_set_rx_with_timeout_in_rtc_step(&radioCtx, timeoutRtcSteps);
   if (st == SX126X_STATUS_OK) {
     radioState      = RADIO_RX_ACTIVE;
@@ -331,7 +451,7 @@ void radioStartRxTimeout(uint32_t timeoutRtcSteps,
     // Chip rejected set_rx — most commonly because a previous RX is still
     // in progress. Reception-preserving scheduler: this is expected; do NOT
     // change radioState (the chip is still busy with its previous action).
-    if (LOG_RK_RX_ATTEMPT) {
+    if (LOG_RK_RX_ATTEMPT && logRate(LRSLOT_RX_SETRX_FAIL, 1000)) {
       Serial.print("RX: set_rx rejected st="); Serial.print(st);
       Serial.print(" priorState="); Serial.println((int)radioState);
     }
@@ -343,7 +463,8 @@ bool radioStartTx(const uint8_t* pkt, size_t len,
                   const sx126x_pkt_params_lora_t& pktParams,
                   bool isLR,
                   int64_t slotIndex, uint8_t seqIdx, WindowMode win, uint8_t ch) {
-  if (LOG_RK_TX_ATTEMPT) {
+  uint32_t supp;
+  if (LOG_RK_TX_ATTEMPT && logRate(LRSLOT_TX_ATTEMPT, 1000, &supp)) {
     int64_t now = esp_timer_get_time();
     int64_t slotStart = syncAnchorUs + (slotIndex - syncSeedSlotIndex) * (int64_t)SLOT_DURATION_US;
     Serial.print("TxAttempt: slot="); Serial.print((long long)slotIndex);
@@ -353,49 +474,83 @@ bool radioStartTx(const uint8_t* pkt, size_t len,
     Serial.print(" tunedCh="); Serial.print(currentTunedChannel);
     Serial.print(" len="); Serial.print((unsigned)len);
     Serial.print(" intoSlotUs="); Serial.print((long long)(now - slotStart));
-    Serial.print(" busy="); Serial.println(digitalRead(LORA_BUSY_PIN));
+    Serial.print(" busy="); Serial.print(digitalRead(LORA_BUSY_PIN));
+    Serial.print(" radioState="); Serial.print((int)radioState);
+    Serial.print(" supp="); Serial.println(supp);
   }
   if (digitalRead(LORA_BUSY_PIN)) {
     if (LOG_RK_TX_ATTEMPT) Serial.println("TX: BUSY — skip");
     return false;
   }
 
+  const uint32_t hwReadDropsAtStart  = totalBusyReadDrops;
+  const uint32_t hwWriteDropsAtStart = totalBusyWriteDrops;
+
   // Apply modulation and packet params unconditionally — checking returns since
   // the HAL silently drops SPI commands when BUSY is high. Spin BUSY before
   // each SPI op since the prior op raises BUSY briefly while the chip processes.
-  if (!waitBusyClear(200)) { Serial.println("TX: BUSY stuck pre mod_params"); return false; }
-  sx126x_status_t stMod = sx126x_set_lora_mod_params(&radioCtx, &modParams);
-  if (stMod != SX126X_STATUS_OK) {
-    Serial.print("TX: set_lora_mod_params rejected st="); Serial.println(stMod);
+  uint32_t waited = 0;
+  uint32_t busyBefore = digitalRead(LORA_BUSY_PIN);
+  if (!waitBusyClear(200, &waited)) {
+    if (logRate(LRSLOT_BUSY_PRE_MOD, 1000, &supp)) {
+      Serial.print("TX: BUSY stuck pre mod_params waitedUs="); Serial.print(waited);
+      Serial.print(" newWriteDrops="); Serial.print(totalBusyWriteDrops - hwWriteDropsAtStart);
+      Serial.print(" supp="); Serial.println(supp);
+    }
     return false;
   }
-  if (!waitBusyClear(200)) { Serial.println("TX: BUSY stuck pre pkt_params"); return false; }
+  uint32_t busyAfter = digitalRead(LORA_BUSY_PIN);
+  sx126x_status_t stMod = sx126x_set_lora_mod_params(&radioCtx, &modParams);
+  if (stMod != SX126X_STATUS_OK) {
+    if (logRate(LRSLOT_TX_MOD_FAIL, 1000, &supp)) {
+      logSpiFail("TX: set_lora_mod_params FAIL", stMod, busyBefore, waited, busyAfter,
+                 hwReadDropsAtStart, hwWriteDropsAtStart);
+      Serial.print("    suppressed="); Serial.println(supp);
+    }
+    return false;
+  }
+  if (!waitBusyClear(200)) {
+    if (logRate(LRSLOT_TX_PKT_FAIL, 1000)) Serial.println("TX: BUSY stuck pre pkt_params");
+    return false;
+  }
   // For TX, rebuild pkt params with actual payload length.
   sx126x_pkt_params_lora_t ppTx = pktParams;
   ppTx.pld_len_in_bytes = (uint8_t)len;
   sx126x_status_t stPkt = sx126x_set_lora_pkt_params(&radioCtx, &ppTx);
   if (stPkt != SX126X_STATUS_OK) {
-    Serial.print("TX: set_lora_pkt_params rejected st="); Serial.println(stPkt);
-    return false;
-  }
-
-  if (!waitBusyClear(200)) { Serial.println("TX: BUSY stuck pre clear_irq"); return false; }
-  sx126x_status_t stClr = sx126x_clear_irq_status(&radioCtx, SX126X_IRQ_ALL);
-  if (stClr != SX126X_STATUS_OK) {
-    Serial.print("TX: clear_irq_status rejected st="); Serial.println(stClr);
-    return false;
-  }
-  dio1Fired = false;
-
-  if (!waitBusyClear(200)) { Serial.println("TX: BUSY stuck pre write_buffer"); return false; }
-  sx126x_status_t st = sx126x_write_buffer(&radioCtx, 0, pkt, (uint8_t)len);
-  if (st != SX126X_STATUS_OK) {
-    Serial.print("TX: write_buffer fail st="); Serial.println(st);
+    if (logRate(LRSLOT_TX_PKT_FAIL, 1000)) {
+      Serial.print("TX: set_lora_pkt_params rejected st="); Serial.println(stPkt);
+    }
     return false;
   }
 
   if (!waitBusyClear(200)) {
-    Serial.println("TX: BUSY stuck pre set_tx — abort");
+    if (logRate(LRSLOT_TX_CLR_FAIL, 1000)) Serial.println("TX: BUSY stuck pre clear_irq");
+    return false;
+  }
+  sx126x_status_t stClr = sx126x_clear_irq_status(&radioCtx, SX126X_IRQ_ALL);
+  if (stClr != SX126X_STATUS_OK) {
+    if (logRate(LRSLOT_TX_CLR_FAIL, 1000)) {
+      Serial.print("TX: clear_irq_status rejected st="); Serial.println(stClr);
+    }
+    return false;
+  }
+  dio1Fired = false;
+
+  if (!waitBusyClear(200)) {
+    if (logRate(LRSLOT_TX_WB_FAIL, 1000)) Serial.println("TX: BUSY stuck pre write_buffer");
+    return false;
+  }
+  sx126x_status_t st = sx126x_write_buffer(&radioCtx, 0, pkt, (uint8_t)len);
+  if (st != SX126X_STATUS_OK) {
+    if (logRate(LRSLOT_TX_WB_FAIL, 1000)) {
+      Serial.print("TX: write_buffer fail st="); Serial.println(st);
+    }
+    return false;
+  }
+
+  if (!waitBusyClear(200)) {
+    if (logRate(LRSLOT_TX_SETTX_FAIL, 1000)) Serial.println("TX: BUSY stuck pre set_tx — abort");
     return false;
   }
 

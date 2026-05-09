@@ -149,7 +149,7 @@ extern uint8_t hopSeq[NUM_HOP_CHANNELS];
 #define LOG_RK_SETNEXT     true
 
 // Base station
-#define LOG_BS_RX_ATTEMPT  true
+#define LOG_BS_RX_ATTEMPT  false
 #define LOG_BS_RX_START    true
 #define LOG_BS_RX_DONE     true
 #define LOG_BS_RX_TIMEOUT  true
@@ -159,6 +159,8 @@ extern uint8_t hopSeq[NUM_HOP_CHANNELS];
 #define LOG_BS_OVERRUN     true
 #define LOG_BS_HB          false
 #define LOG_BS_SETNEXT     false
+#define LOG_BS_SCAN_RX_START     false
+
 
 // ===================== HMAC =====================
 
