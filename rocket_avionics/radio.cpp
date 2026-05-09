@@ -896,7 +896,7 @@ void nonblockingRadio() {
       if (!applyFrequency(ch)) return;  // skip — would TX on wrong channel
       sx126x_mod_params_lora_t mp = buildModParams(CFG_NORMAL);
       uint8_t pkt[255];
-      size_t len = buildTelemetryPacket(pkt);
+      size_t len = buildTelemetryPacket(pkt, seqIdx);
       sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL,(uint8_t)len);
       radioStartTx(pkt, len, mp, pp, false, slotIndex, seqIdx, win, ch);
     } else {

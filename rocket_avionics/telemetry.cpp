@@ -98,7 +98,13 @@ static int16_t clampToInt16(double val, bool valid, int16_t invalidVal) {
   return (int16_t)val;
 }
 
-static uint16_t buildStateFlags() {
+// seqIdx is passed in by the caller — the slot machine computes it at TX-decision
+// time and the same value must end up in bits [12:15] of the wire packet, or the
+// base station's passive-sync anchor calc gets the wrong slot.
+// For BLE / log paths where there is no TX-decision context, pass
+// radioGetSlotIndex() % SLOT_SEQUENCE_LEN — accuracy of this field doesn't matter
+// off the air.
+static uint16_t buildStateFlags(uint8_t seqIdx) {
   uint16_t flags = 0;
   flags |= ((uint16_t)flightGetPhase() & 0x0F);  // [3:0] flight phase
   if (isArmed) flags |= (1 << 4);                // [4] armed
@@ -109,10 +115,7 @@ static uint16_t buildStateFlags() {
   if (flightBaroOk())    flags |= (1 << 9);   // [9] baro ok
   if (flightAccelOk())   flags |= (1 << 10);  // [10] accel ok
   if (flightIsArmReady()) flags |= (1 << 11); // [11] arm ready
-  // [15:12] slot_seq_idx: slot_index % SLOT_SEQUENCE_LEN, wire-packing for passive sync.
-  // SLOT_SEQUENCE_LEN must be ≤16 for this 4-bit field.
-  // Defensive: cast to uint64 before mod so negative slot indices (pre-anchor) wrap predictably.
-  flags |= ((uint16_t)(((uint64_t)radioGetSlotIndex()) % SLOT_SEQUENCE_LEN) & 0x0F) << 12;
+  flags |= ((uint16_t)(seqIdx & 0x0F)) << 12; // [15:12] slot_seq_idx for passive sync
   return flags;
 }
 
@@ -397,7 +400,9 @@ size_t buildHeaderRecord(uint8_t* buf, size_t maxLen) {
   writeU16(buf, &pos, encodeGpsFrac(gps.lat));
   writeU16(buf, &pos, encodeGpsFrac(gps.lon));
   writeS16(buf, &pos, fusionAlt);
-  writeU16(buf, &pos, buildStateFlags());
+  // BLE record: this field's value doesn't go on air for sync purposes.
+  uint8_t bleSeqIdx = (uint8_t)(((uint64_t)radioGetSlotIndex()) % SLOT_SEQUENCE_LEN);
+  writeU16(buf, &pos, buildStateFlags(bleSeqIdx));
   return pos;  // 11
 }
 
@@ -436,7 +441,7 @@ size_t buildDataPageRecord(uint8_t pageType, uint8_t* buf, size_t maxLen) {
 
 // ===================== TELEMETRY PACKET =====================
 
-size_t buildTelemetryPacket(uint8_t* buf) {
+size_t buildTelemetryPacket(uint8_t* buf, uint8_t seqIdx) {
   // LoRa format: flat binary, no length-prefixed records.
   // Header fields written directly, followed by one data page.
   size_t pos = 0;
@@ -454,7 +459,7 @@ size_t buildTelemetryPacket(uint8_t* buf) {
     fusionAlt = clampToInt16(gps.alt, true, -32768);
   }
   writeS16(buf, &pos, fusionAlt);
-  writeU16(buf, &pos, buildStateFlags());
+  writeU16(buf, &pos, buildStateFlags(seqIdx));
 
   // Choose data page: cmd ack > thrust curve force > round-robin
   uint8_t pageType;

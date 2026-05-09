@@ -56,7 +56,12 @@ extern LogPageConfig logPages[LOGI_COUNT];
 // ===================== PUBLIC API =====================
 
 // Build a complete telemetry packet into buf (LoRa format). Returns packet length.
-size_t buildTelemetryPacket(uint8_t* buf);
+// seqIdx is the rocket's slot_index % SLOT_SEQUENCE_LEN at TX-decision time —
+// must match what the slot machine used to pick channel/window for this TX, NOT
+// recomputed from radioGetSlotIndex() inside the build (which can tick between
+// the TX decision and packet build, putting a stale value in the wire field
+// and breaking base-station passive sync).
+size_t buildTelemetryPacket(uint8_t* buf, uint8_t seqIdx);
 
 // Build a telemetry header as a BLE record: [len][0xAF][deviceId][gpsFrac1][gpsFrac2][fusionAlt s16][stateFlags u16]
 // len=10 (type byte + 9 data bytes). Returns total bytes written (len byte + data).
