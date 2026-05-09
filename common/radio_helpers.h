@@ -28,15 +28,15 @@ static inline float channelToBwKHz(uint8_t ch) {
 
 inline void rederiveHopSequence(uint8_t cmdChannel) {
   uint8_t pool[64];
-  for (uint8_t i = 0; i < 64; i++) pool[i] = 4+(i%1);//i;  //TODO: @@@@@ fixed channel/fewer channels for debugging
+  for (uint8_t i = 0; i < 64; i++) pool[i] = 4+(i%1);//i;  //TODO: @@@@@ fixed channel/fewer channels for debugging %1
 
   uint32_t lcg = 0;
   for (uint8_t i = 0; i < HOP_SEED_LEN; i++) lcg = (lcg << 8) ^ HOP_SEED[i];
 
   for (uint8_t i = 63; i > 0; i--) {
     lcg = lcg * 1664525UL + 1013904223UL;  // Numerical Recipes LCG
-    uint8_t j = (uint8_t)(lcg >> 16) % (i + 1);
-    uint8_t tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp;
+    //uint8_t j = (uint8_t)(lcg >> 16) % (i + 1);
+    //uint8_t tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp;
   }
 
   for (uint8_t i = 0; i < NUM_HOP_CHANNELS; i++) {

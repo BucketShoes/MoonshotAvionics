@@ -29,6 +29,7 @@ enum WindowMode : uint8_t {
   WIN_CONTINUE      = 9,   // explicit no-op: extends previous slot, no radio action taken
   WIN_NARROWBAND_TELEM = 10,
   WIN_WIDEBAND_TELEM   = 11,
+
 };
 
 // ===================== SLOT SEQUENCE =====================
