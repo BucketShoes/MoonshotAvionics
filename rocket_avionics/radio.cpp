@@ -280,8 +280,13 @@ void radioStartRxTimeout(uint32_t timeoutRtcSteps,
       Serial.println("us");
     }
   } else {
-    Serial.print("RX: set_rx fail st="); Serial.println(st);
-    radioState = RADIO_STANDBY;
+    // Chip rejected set_rx — most commonly because a previous RX is still
+    // in progress. Reception-preserving scheduler: this is expected; do NOT
+    // change radioState (the chip is still busy with its previous action).
+    if (LOG_RK_RX_ATTEMPT) {
+      Serial.print("RX: set_rx rejected st="); Serial.print(st);
+      Serial.print(" priorState="); Serial.println((int)radioState);
+    }
   }
 }
 
@@ -665,8 +670,12 @@ void nonblockingRadio() {
       sx126x_mod_params_lora_t mp = buildModParams(CFG_NORMAL);
       int64_t remainUs = slotEndUsFor(slotIndex) - now;
       if (remainUs < (int64_t)BS_RX_MIN_REMAINING_US) return;
+      // Reception-preserving scheduler: leave a tail guard so the radio's
+      // own timeout fires before the next slot starts. See CLAUDE.md.
+      int64_t rxTimeoutUs = remainUs - (int64_t)BS_RX_TAIL_GUARD_US;
+      if (rxTimeoutUs < 0) rxTimeoutUs = 0;
       sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL,255);
-      radioStartRxTimeout((uint32_t)(remainUs / 15.625f), mp, pp, false);
+      radioStartRxTimeout((uint32_t)(rxTimeoutUs / 15.625f), mp, pp, false);
     }
 
   } else if (win == WIN_LR) {
@@ -690,9 +699,13 @@ void nonblockingRadio() {
     int64_t remainUs = slotEndUsFor(slotIndex) - now;
     if (remainUs > timeoutUs) remainUs = timeoutUs;
     if (remainUs < (int64_t)BS_RX_MIN_REMAINING_US) return;
+    // Reception-preserving scheduler: leave a tail guard so the radio's
+    // own timeout fires before the next slot starts. See CLAUDE.md.
+    int64_t rxTimeoutUs = remainUs - (int64_t)BS_RX_TAIL_GUARD_US;
+    if (rxTimeoutUs < 0) rxTimeoutUs = 0;
 
     sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL,255);
-    radioStartRxTimeout((uint32_t)(remainUs / 15.625f), mp, pp, false);
+    radioStartRxTimeout((uint32_t)(rxTimeoutUs / 15.625f), mp, pp, false);
 
   } else if (win == WIN_OFF) {
     radioStandby();

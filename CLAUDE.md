@@ -34,6 +34,20 @@ Most of this codebase is cosmetic or tracking-only (telemetry display, logging, 
 
 - If radio power-cycling while armed is ever added, a non-blocking state machine must be used instead of `*_BLOCKING` calls.
 
+## Reception-preserving (non-preemptive) slot scheduler
+
+The radio slot machine on both rocket and base station is **reception-preserving**. The invariant: *once an RX has been issued, only the radio itself (its own timeout or an RxDone/CRC IRQ) ends it.* Software never preempts an in-progress RX.
+
+This is intentional and load-bearing — it is **not a bug to be "fixed"**. Concretely:
+
+- **Never call `radioStandby()` / `bsRadioStandby()` from the slot-machine path** to prepare for the next action. Standby is reserved for: (a) initial config, (b) the wedged-recovery path after N consecutive overruns, (c) explicit slot types like `WIN_OFF`, (d) explicit user/scan policy transitions (e.g. entering passive scan).
+- **`SetRx`/`SetTx` issued while the chip is still in a previous RX is expected and OK.** The chip rejects the new command (returns non-OK status) — we tolerate that, count it as overrun, and try again next slot. We do **not** add a "standby first" call to make the new command succeed, because doing so aborts a packet that may be mid-reception. A garbled/missing packet is worse than a missed slot.
+- **The `BUSY` GPIO is "command-in-flight," not "radio-busy."** It goes low once the chip starts TX/RX. Use it only to gate when SPI commands can be issued, not as a state proxy for "is the radio doing something."
+- **RX timeouts must end before the next slot's action would start, with `BS_RX_TAIL_GUARD_US` of margin.** If the radio's own timeout hasn't fired by the next slot boundary, a packet is arriving (the chip internally cancels its timeout on preamble detection — an event we cannot hook). The next slot's `set_rx` rejection is the signal that we're still receiving; we keep listening.
+- **Slots are deliberately small relative to airtime.** Long packets (LR mode, large telemetry pages) routinely span 2–4 slots. The scheduler is designed around this: slot boundaries are scheduling tick points, not deadlines.
+
+If you are tempted to add `setStandby()` "to be safe" before issuing an RX/TX, **stop**. That instinct comes from generic SX1262 driver examples that assume one-RX-at-a-time. This system is not that. If you think the scheduler has a real bug, reframe the question first: "is the radio finishing reception correctly?" not "are we cleanly transitioning between commands?"
+
 ## System overview
 
 ```

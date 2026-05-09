@@ -95,6 +95,11 @@ extern uint8_t hopSeq[NUM_HOP_CHANNELS];
 #define BS_RX_EARLY_US           20'000UL
 #define BS_CMD_TX_OFFSET_US       5'000UL
 #define BS_RX_MIN_REMAINING_US   60'000UL
+// Trailing guard subtracted from the RX timeout so the radio's own timeout
+// fires BEFORE the next slot's action would start. Reception-preserving
+// scheduler invariant: if the radio hasn't timed out by then, a packet is
+// arriving and software must not preempt it. See CLAUDE.md.
+#define BS_RX_TAIL_GUARD_US      30'000UL
 #define BS_RX_TIMEOUT_US         (SLOT_DURATION_US - 20'000UL)
 #define BS_OVERRUN_MAX           3
 

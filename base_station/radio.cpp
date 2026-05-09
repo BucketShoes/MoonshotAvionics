@@ -260,13 +260,10 @@ void bsRadioStartRxTimeout(uint32_t timeoutRtcSteps,
     Serial.print(" priorState="); Serial.print((int)bsRadioState);
     Serial.print(" dio1Fired="); Serial.println((int)dio1Fired);
   }
-  // If we're about to start a new RX while the previous action hasn't completed,
-  // that's a tear-down of in-progress state — log it so we can correlate with
-  // missing-packet symptoms.
-  if (bsRadioState != BS_RADIO_STANDBY) {
-    Serial.print("BS RX: STARTING WHILE state="); Serial.print((int)bsRadioState);
-    Serial.print(" dio1Fired="); Serial.println((int)dio1Fired);
-  }
+  // Reception-preserving scheduler: it is EXPECTED for set_rx to be issued
+  // while the chip is still in a previous RX. If a packet is mid-flight the
+  // chip will reject the new command (handled below via st != OK) and we
+  // simply let the previous RX complete. Do NOT call set_standby here.
   if (digitalRead(LORA_BUSY_PIN)) {
     if (LOG_BS_RX_ATTEMPT) Serial.println("BS RX: BUSY at start — skip");
     return;
@@ -303,8 +300,14 @@ void bsRadioStartRxTimeout(uint32_t timeoutRtcSteps,
       Serial.println("us");
     }
   } else {
-    Serial.print("BS RX: set_rx fail st="); Serial.println(st);
-    bsRadioState = BS_RADIO_STANDBY;
+    // Chip rejected set_rx — most commonly because a previous RX is still
+    // in progress. This is expected under the reception-preserving scheduler;
+    // do NOT change bsRadioState (the chip is still busy with whatever it
+    // was doing, not in standby).
+    if (LOG_BS_RX_ATTEMPT) {
+      Serial.print("BS RX: set_rx rejected st="); Serial.print(st);
+      Serial.print(" priorState="); Serial.println((int)bsRadioState);
+    }
   }
 }
 
@@ -808,17 +811,26 @@ void bsHandleRadio() {
   // Time has come and BUSY is clear — fire the slot's action.
   bsLastActionStartedSlot = slotIndex;
 
+  // Reception-preserving scheduler: RX timeout ends BEFORE the next slot's
+  // action would start, by BS_RX_TAIL_GUARD_US. If the radio's own timeout
+  // hasn't fired by then, a packet is arriving and we must let it complete —
+  // the next slot's set_rx attempt will be rejected by the chip, which we
+  // tolerate (counted as overrun). Never preempt in-flight RX.
+  int64_t rxTimeoutUs = remainUs - (int64_t)BS_RX_TAIL_GUARD_US;
+  if (rxTimeoutUs < 0) rxTimeoutUs = 0;
+  uint32_t timeoutSteps = (uint32_t)(rxTimeoutUs / 15.625f);
+
   if (win == WIN_TELEM) {
     applyFrequency(ch);
     sx126x_mod_params_lora_t mp = buildModParams(CFG_NORMAL);
     sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL, 255);
-    bsRadioStartRxTimeout((uint32_t)(remainUs / 15.625f), mp, pp, false);
+    bsRadioStartRxTimeout(timeoutSteps, mp, pp, false);
 
   } else if (win == WIN_LR) {
     applyFrequency(ch);
     sx126x_mod_params_lora_t mp = buildModParams(CFG_LR);
     sx126x_pkt_params_lora_t pp = buildPktParams(CFG_LR, 3);
-    bsRadioStartRxTimeout((uint32_t)(remainUs / 15.625f), mp, pp, true);
+    bsRadioStartRxTimeout(timeoutSteps, mp, pp, true);
 
   } else if (win == WIN_CMD) {
     // Signal the main loop's command dispatcher.
@@ -832,10 +844,12 @@ void bsHandleRadio() {
         SX126X_LORA_CR_4_5, 0
       };
       sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL, 255);
-      bsRadioStartRxTimeout((uint32_t)(remainUs / 15.625f), mp, pp, false);
+      bsRadioStartRxTimeout(timeoutSteps, mp, pp, false);
     }
 
   } else if (win == WIN_OFF) {
+    // WIN_OFF intentionally requests low-power standby — explicit user intent,
+    // not a preemption of in-flight RX.
     bsRadioStandby();
   }
 
