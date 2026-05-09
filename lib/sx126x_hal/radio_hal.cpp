@@ -52,7 +52,7 @@ extern "C" sx126x_hal_status_t sx126x_hal_write(
             // Init path: spin until BUSY clears (blocking, init only, not from armed loop)
             unsigned long t0 = millis();
             while (digitalRead(c->busy)) {
-                if ((millis() - t0) >= 10) {
+                if ((millis() - t0) >= BUSY_INIT_TIMEOUT_MS) {
                     Serial.println("HAL: BUSY timeout on write (init)");
                     return SX126X_HAL_STATUS_ERROR;
                 }
@@ -66,7 +66,7 @@ extern "C" sx126x_hal_status_t sx126x_hal_write(
             // window. Anything longer than that is treated as "slot window missed."
             unsigned long t0 = micros();
             while (digitalRead(c->busy)) {
-                if ((micros() - t0) >= 100) {
+                if ((micros() - t0) >= BUSY_RUNTIME_TIMEOUT_US) {
                     totalBusyWriteDrops++;
                     lastDroppedOpcode   = (command_length > 0) ? command[0] : 0xFF;
                     lastDroppedAtMicros = micros();
@@ -123,7 +123,7 @@ extern "C" sx126x_hal_status_t sx126x_hal_read(
             // Init path: spin until BUSY clears (blocking, init only, not from armed loop)
             unsigned long t0 = millis();
             while (digitalRead(c->busy)) {
-                if ((millis() - t0) >= 10) {
+                if ((millis() - t0) >= BUSY_INIT_TIMEOUT_MS) {
                     Serial.println("HAL: BUSY timeout on read (init)");
                     return SX126X_HAL_STATUS_ERROR;
                 }
@@ -136,7 +136,7 @@ extern "C" sx126x_hal_status_t sx126x_hal_read(
             // Runtime: short spin (see write path). Drop only if BUSY persists.
             unsigned long t0 = micros();
             while (digitalRead(c->busy)) {
-                if ((micros() - t0) >= 100) {
+                if ((micros() - t0) >= BUSY_RUNTIME_TIMEOUT_US) {
                     totalBusyReadDrops++;
                     lastDroppedOpcode   = (command_length > 0) ? command[0] : 0xFF;
                     lastDroppedAtMicros = micros();

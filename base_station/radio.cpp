@@ -195,7 +195,7 @@ static void logSpiFail(const char* tag, sx126x_status_t st,
 // because set_rf_freq itself raises BUSY while the chip retunes — the very next
 // SPI op (typically set_lora_mod_params) would otherwise be dropped.
 static bool applyFrequency(uint8_t ch) {
-  if (!waitBusyClear(200)) {
+  if (!waitBusyClear(BUSY_RUNTIME_TIMEOUT_US)) {
     Serial.print("BS applyFrequency: BUSY stuck pre, freq NOT applied ch="); Serial.println(ch);
     return false;
   }
@@ -209,7 +209,7 @@ static bool applyFrequency(uint8_t ch) {
   }
   // Wait for BUSY to drop after the freq write so the next SPI op doesn't get
   // HAL-dropped.
-  if (!waitBusyClear(200)) {
+  if (!waitBusyClear(BUSY_RUNTIME_TIMEOUT_US)) {
     Serial.print("BS applyFrequency: BUSY stuck post-write ch="); Serial.println(ch);
     // The freq write went through, so update currentTunedChannel anyway —
     // the chip IS on the new channel, the next caller just may have to wait.
@@ -386,7 +386,7 @@ void bsRadioStartRxTimeout(uint32_t timeoutRtcSteps,
   // moving without dropped writes.
   uint32_t waited = 0;
   uint32_t busyBefore = digitalRead(LORA_BUSY_PIN);
-  if (!waitBusyClear(200, &waited)) {
+  if (!waitBusyClear(BUSY_RUNTIME_TIMEOUT_US, &waited)) {
     if (logRate(LRSLOT_BUSY_PRE_MOD, 1000, &supp)) {
       Serial.print("BS RX: BUSY stuck pre mod_params waitedUs="); Serial.print(waited);
       Serial.print(" newWriteDrops="); Serial.print(totalBusyWriteDrops - hwWriteDropsAtStart);
@@ -404,7 +404,7 @@ void bsRadioStartRxTimeout(uint32_t timeoutRtcSteps,
     }
     return;
   }
-  if (!waitBusyClear(200)) {
+  if (!waitBusyClear(BUSY_RUNTIME_TIMEOUT_US)) {
     if (logRate(LRSLOT_RX_PKT_FAIL, 1000)) Serial.println("BS RX: BUSY stuck before pkt_params");
     return;
   }
@@ -415,7 +415,7 @@ void bsRadioStartRxTimeout(uint32_t timeoutRtcSteps,
     }
     return;
   }
-  if (!waitBusyClear(200)) {
+  if (!waitBusyClear(BUSY_RUNTIME_TIMEOUT_US)) {
     if (logRate(LRSLOT_RX_CLR_FAIL, 1000)) Serial.println("BS RX: BUSY stuck before clear_irq");
     return;
   }
@@ -428,7 +428,7 @@ void bsRadioStartRxTimeout(uint32_t timeoutRtcSteps,
   }
   dio1Fired = false;
 
-  if (!waitBusyClear(200)) {
+  if (!waitBusyClear(BUSY_RUNTIME_TIMEOUT_US)) {
     if (logRate(LRSLOT_RX_SETRX_FAIL, 1000)) Serial.println("BS RX: BUSY stuck before set_rx");
     return;
   }
@@ -494,7 +494,7 @@ bool bsRadioStartTx(const uint8_t* pkt, size_t len) {
   }
 
   sx126x_mod_params_lora_t mp = buildModParams(CFG_NORMAL);
-  if (!waitBusyClear(200)) { Serial.println("BS TX: BUSY stuck before mod_params"); return false; }
+  if (!waitBusyClear(BUSY_RUNTIME_TIMEOUT_US)) { Serial.println("BS TX: BUSY stuck before mod_params"); return false; }
   sx126x_status_t stMod = sx126x_set_lora_mod_params(&bsRadioCtx, &mp);
   if (stMod != SX126X_STATUS_OK) {
     Serial.print("BS TX: set_lora_mod_params rejected st="); Serial.println(stMod);
@@ -502,14 +502,14 @@ bool bsRadioStartTx(const uint8_t* pkt, size_t len) {
   }
 
   sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL,(uint8_t)len);
-  if (!waitBusyClear(200)) { Serial.println("BS TX: BUSY stuck before pkt_params"); return false; }
+  if (!waitBusyClear(BUSY_RUNTIME_TIMEOUT_US)) { Serial.println("BS TX: BUSY stuck before pkt_params"); return false; }
   sx126x_status_t stPkt = sx126x_set_lora_pkt_params(&bsRadioCtx, &pp);
   if (stPkt != SX126X_STATUS_OK) {
     Serial.print("BS TX: set_lora_pkt_params rejected st="); Serial.println(stPkt);
     return false;
   }
 
-  if (!waitBusyClear(200)) { Serial.println("BS TX: BUSY stuck before clear_irq"); return false; }
+  if (!waitBusyClear(BUSY_RUNTIME_TIMEOUT_US)) { Serial.println("BS TX: BUSY stuck before clear_irq"); return false; }
   sx126x_status_t stClr = sx126x_clear_irq_status(&bsRadioCtx, SX126X_IRQ_ALL);
   if (stClr != SX126X_STATUS_OK) {
     Serial.print("BS TX: clear_irq_status rejected st="); Serial.println(stClr);
@@ -517,7 +517,7 @@ bool bsRadioStartTx(const uint8_t* pkt, size_t len) {
   }
   dio1Fired = false;
 
-  if (!waitBusyClear(200)) { Serial.println("BS TX: BUSY stuck before write_buffer"); return false; }
+  if (!waitBusyClear(BUSY_RUNTIME_TIMEOUT_US)) { Serial.println("BS TX: BUSY stuck before write_buffer"); return false; }
   sx126x_status_t st = sx126x_write_buffer(&bsRadioCtx, 0, pkt, (uint8_t)len);
   if (st != SX126X_STATUS_OK) {
     Serial.print("BS TX: write_buffer fail st="); Serial.println(st);

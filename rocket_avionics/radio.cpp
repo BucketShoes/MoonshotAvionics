@@ -177,7 +177,7 @@ static void logSpiFail(const char* tag, sx126x_status_t st,
 // because set_rf_freq itself raises BUSY while the chip retunes — the very next
 // SPI op (typically set_lora_mod_params) would otherwise be dropped.
 static bool applyFrequency(uint8_t ch) {
-  if (!waitBusyClear(200)) {
+  if (!waitBusyClear(BUSY_RUNTIME_TIMEOUT_US)) {
     Serial.print("RK applyFrequency: BUSY stuck pre, freq NOT applied ch="); Serial.println(ch);
     return false;
   }
@@ -189,7 +189,7 @@ static bool applyFrequency(uint8_t ch) {
     Serial.print(" ch="); Serial.println(ch);
     return false;
   }
-  if (!waitBusyClear(200)) {
+  if (!waitBusyClear(BUSY_RUNTIME_TIMEOUT_US)) {
     Serial.print("RK applyFrequency: BUSY stuck post-write ch="); Serial.println(ch);
     currentTunedChannel = ch;
     return false;
@@ -383,7 +383,7 @@ void radioStartRxTimeout(uint32_t timeoutRtcSteps,
   // briefly while the chip processes.
   uint32_t waited = 0;
   uint32_t busyBefore = digitalRead(LORA_BUSY_PIN);
-  if (!waitBusyClear(200, &waited)) {
+  if (!waitBusyClear(BUSY_RUNTIME_TIMEOUT_US, &waited)) {
     if (logRate(LRSLOT_BUSY_PRE_MOD, 1000, &supp)) {
       Serial.print("RX: BUSY stuck pre mod_params waitedUs="); Serial.print(waited);
       Serial.print(" newWriteDrops="); Serial.print(totalBusyWriteDrops - hwWriteDropsAtStart);
@@ -401,7 +401,7 @@ void radioStartRxTimeout(uint32_t timeoutRtcSteps,
     }
     return;  // would RX with stale modulation -> garbage demod
   }
-  if (!waitBusyClear(200)) {
+  if (!waitBusyClear(BUSY_RUNTIME_TIMEOUT_US)) {
     if (logRate(LRSLOT_RX_PKT_FAIL, 1000)) Serial.println("RX: BUSY stuck pre pkt_params");
     return;
   }
@@ -413,7 +413,7 @@ void radioStartRxTimeout(uint32_t timeoutRtcSteps,
     return;
   }
 
-  if (!waitBusyClear(200)) {
+  if (!waitBusyClear(BUSY_RUNTIME_TIMEOUT_US)) {
     if (logRate(LRSLOT_RX_CLR_FAIL, 1000)) Serial.println("RX: BUSY stuck pre clear_irq");
     return;
   }
@@ -426,7 +426,7 @@ void radioStartRxTimeout(uint32_t timeoutRtcSteps,
   }
   dio1Fired = false;
 
-  if (!waitBusyClear(200)) {
+  if (!waitBusyClear(BUSY_RUNTIME_TIMEOUT_US)) {
     if (logRate(LRSLOT_RX_SETRX_FAIL, 1000)) Serial.println("RX: BUSY stuck pre set_rx");
     return;
   }
@@ -491,7 +491,7 @@ bool radioStartTx(const uint8_t* pkt, size_t len,
   // each SPI op since the prior op raises BUSY briefly while the chip processes.
   uint32_t waited = 0;
   uint32_t busyBefore = digitalRead(LORA_BUSY_PIN);
-  if (!waitBusyClear(200, &waited)) {
+  if (!waitBusyClear(BUSY_RUNTIME_TIMEOUT_US, &waited)) {
     if (logRate(LRSLOT_BUSY_PRE_MOD, 1000, &supp)) {
       Serial.print("TX: BUSY stuck pre mod_params waitedUs="); Serial.print(waited);
       Serial.print(" newWriteDrops="); Serial.print(totalBusyWriteDrops - hwWriteDropsAtStart);
@@ -509,7 +509,7 @@ bool radioStartTx(const uint8_t* pkt, size_t len,
     }
     return false;
   }
-  if (!waitBusyClear(200)) {
+  if (!waitBusyClear(BUSY_RUNTIME_TIMEOUT_US)) {
     if (logRate(LRSLOT_TX_PKT_FAIL, 1000)) Serial.println("TX: BUSY stuck pre pkt_params");
     return false;
   }
@@ -524,7 +524,7 @@ bool radioStartTx(const uint8_t* pkt, size_t len,
     return false;
   }
 
-  if (!waitBusyClear(200)) {
+  if (!waitBusyClear(BUSY_RUNTIME_TIMEOUT_US)) {
     if (logRate(LRSLOT_TX_CLR_FAIL, 1000)) Serial.println("TX: BUSY stuck pre clear_irq");
     return false;
   }
@@ -537,7 +537,7 @@ bool radioStartTx(const uint8_t* pkt, size_t len,
   }
   dio1Fired = false;
 
-  if (!waitBusyClear(200)) {
+  if (!waitBusyClear(BUSY_RUNTIME_TIMEOUT_US)) {
     if (logRate(LRSLOT_TX_WB_FAIL, 1000)) Serial.println("TX: BUSY stuck pre write_buffer");
     return false;
   }
@@ -549,7 +549,7 @@ bool radioStartTx(const uint8_t* pkt, size_t len,
     return false;
   }
 
-  if (!waitBusyClear(200)) {
+  if (!waitBusyClear(BUSY_RUNTIME_TIMEOUT_US)) {
     if (logRate(LRSLOT_TX_SETTX_FAIL, 1000)) Serial.println("TX: BUSY stuck pre set_tx — abort");
     return false;
   }

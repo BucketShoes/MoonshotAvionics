@@ -30,6 +30,27 @@
 #include <Arduino.h>
 #include <SPI.h>
 
+// ===================== BUSY TIMEOUTS =====================
+// Three categories. Tune these in one place rather than scattering magic numbers.
+//
+// BUSY_RUNTIME_TIMEOUT_US: per-SPI-op spin during normal operation. Covers the
+//   chip's command-processing window (typically tens of µs, occasionally longer
+//   when the driver chains an internal errata read straight after a write — see
+//   sx126x_set_lora_mod_params §15.1 workaround). Bumped up because dropping a
+//   single internal read leaves the whole driver call returning ERROR with the
+//   chip in an inconsistent state. 5ms fits inside the 10ms loop budget. Also
+//   used by slot-machine waitBusyClear() between consecutive SPI ops.
+//
+// BUSY_INIT_TIMEOUT_MS: per-SPI-op spin during radio init (initMode=true).
+//   Init paths block freely; this is purely a sanity bound to avoid hanging
+//   forever if the chip is dead.
+//
+// BUSY_INIT_LONG_TIMEOUT_MS: post-reset / post-wakeup wait (radioWaitBusy*).
+//   Chip can take many ms after reset before BUSY drops. Init-only.
+#define BUSY_RUNTIME_TIMEOUT_US      2000
+#define BUSY_INIT_TIMEOUT_MS         10
+#define BUSY_INIT_LONG_TIMEOUT_MS    5000
+
 // ===================== HAL CONTEXT =====================
 
 struct sx126x_hal_context_t {
@@ -101,7 +122,7 @@ void radioMcpwmInit(uint8_t dio1Pin);
 // (one SPI command per loop iteration, BUSY-check-and-skip, no spinning).
 // If radio power-cycling while armed is ever added, use a non-blocking state machine.
 inline bool DO_NOT_CALL_WHILE_ARMED_radioWaitBusy_WARNING_LONG_BLOCKING(
-    const sx126x_hal_context_t* ctx, uint32_t timeoutMs = 100) {
+    const sx126x_hal_context_t* ctx, uint32_t timeoutMs = BUSY_INIT_LONG_TIMEOUT_MS) {
     unsigned long t0 = millis();
     while (digitalRead(ctx->busy)) {
         if ((millis() - t0) >= timeoutMs) return false;
