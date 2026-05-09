@@ -127,20 +127,43 @@ static sx126x_pkt_params_lora_t buildPktParams(RadioCfg cfg, uint8_t pldLen) {
 // from this (independent of slot index, per user requirement).
 static uint8_t currentTunedChannel = DEFAULT_CHANNEL;
 
-static void applyFrequency(uint8_t ch) {
+// Returns true if the frequency was actually applied. The HAL drops SPI commands
+// when BUSY is high (returns SX126X_HAL_STATUS_ERROR -> non-OK sx126x_status_t).
+// Spin briefly for BUSY to clear, then issue and check the command. Only update
+// currentTunedChannel on success, otherwise we'd lie about what channel the
+// chip is on and the next set_rx would listen on the wrong frequency.
+static bool applyFrequency(uint8_t ch) {
+  {
+    unsigned long t0 = micros();
+    while (digitalRead(LORA_BUSY_PIN) && (micros() - t0) < 100) {}
+  }
+  if (digitalRead(LORA_BUSY_PIN)) {
+    Serial.print("BS applyFrequency: BUSY stuck, freq NOT applied ch="); Serial.println(ch);
+    return false;
+  }
   float freqMHz = channelToFreqMHz(ch);
   uint32_t freqHz = (uint32_t)(freqMHz * 1e6f + 0.5f);
-  sx126x_set_rf_freq(&bsRadioCtx, freqHz);
+  sx126x_status_t st = sx126x_set_rf_freq(&bsRadioCtx, freqHz);
+  if (st != SX126X_STATUS_OK) {
+    Serial.print("BS applyFrequency: set_rf_freq rejected st="); Serial.print(st);
+    Serial.print(" ch="); Serial.println(ch);
+    return false;
+  }
   currentTunedChannel = ch;
+  return true;
 }
 
 // SX1262 errata §15.3: after any RX with implicit header + timeout, prevent spurious timeout.
 static void applyImplicitHeaderErrataFix() {
   uint8_t val = 0;
-  sx126x_write_register(&bsRadioCtx, 0x0920, &val, 1);
-  sx126x_read_register(&bsRadioCtx, 0x0944, &val, 1);
+  sx126x_status_t st;
+  st = sx126x_write_register(&bsRadioCtx, 0x0920, &val, 1);
+  if (st != SX126X_STATUS_OK) { Serial.print("BS errata: write 0x0920 fail st="); Serial.println(st); return; }
+  st = sx126x_read_register(&bsRadioCtx, 0x0944, &val, 1);
+  if (st != SX126X_STATUS_OK) { Serial.print("BS errata: read 0x0944 fail st="); Serial.println(st); return; }
   val |= 0x02;
-  sx126x_write_register(&bsRadioCtx, 0x0944, &val, 1);
+  st = sx126x_write_register(&bsRadioCtx, 0x0944, &val, 1);
+  if (st != SX126X_STATUS_OK) { Serial.print("BS errata: write 0x0944 fail st="); Serial.println(st); }
 }
 
 static void bsLedOn()  {
@@ -242,19 +265,23 @@ void bsRadioApplyConfig_BLOCKING() {
 
 // ===================== RX / TX =====================
 
+// slotIndex/seqIdx/win/ch are the values the slot machine decided to act on —
+// pass them through so logs reflect the actual decision, not whatever
+// bsGetSlotIndex() happens to return at log time (which has been observed to
+// disagree with the decision, especially when the action runs late).
 void bsRadioStartRxTimeout(uint32_t timeoutRtcSteps,
                             const sx126x_mod_params_lora_t& modParams,
                             const sx126x_pkt_params_lora_t& pktParams,
-                            bool isLR) {
+                            bool isLR,
+                            int64_t slotIndex, uint8_t seqIdx, WindowMode win, uint8_t ch) {
   if (LOG_BS_RX_ATTEMPT) {
     int64_t now = esp_timer_get_time();
-    int64_t s = bsGetSlotIndex();
-    int64_t slotStart = bsSyncAnchorUs + (s - bsSyncSeedSlotIndex) * (int64_t)SLOT_DURATION_US;
-    uint8_t seqIdx = (uint8_t)(((uint64_t)(s - bsSyncSeedSlotIndex)) % SLOT_SEQUENCE_LEN);
-    Serial.print("BS RxAttempt: slot="); Serial.print((long long)s);
+    int64_t slotStart = bsSyncAnchorUs + (slotIndex - bsSyncSeedSlotIndex) * (int64_t)SLOT_DURATION_US;
+    Serial.print("BS RxAttempt: slot="); Serial.print((long long)slotIndex);
     Serial.print(" seq="); Serial.print(seqIdx);
-    Serial.print(" win="); Serial.print(windowModeName(SLOT_SEQUENCE[seqIdx]));
-    Serial.print(" ch="); Serial.print(currentTunedChannel);
+    Serial.print(" win="); Serial.print(windowModeName(win));
+    Serial.print(" ch="); Serial.print(ch);
+    Serial.print(" tunedCh="); Serial.print(currentTunedChannel);
     Serial.print(" intoSlotUs="); Serial.print((long long)(now - slotStart));
     Serial.print(" busy="); Serial.print(digitalRead(LORA_BUSY_PIN));
     Serial.print(" priorState="); Serial.print((int)bsRadioState);
@@ -269,14 +296,26 @@ void bsRadioStartRxTimeout(uint32_t timeoutRtcSteps,
     return;
   }
 
-  sx126x_set_lora_mod_params(&bsRadioCtx, &modParams);
+  sx126x_status_t stMod = sx126x_set_lora_mod_params(&bsRadioCtx, &modParams);
+  if (stMod != SX126X_STATUS_OK) {
+    Serial.print("BS RX: set_lora_mod_params rejected st="); Serial.println(stMod);
+    return;  // would RX with stale modulation -> garbage demod
+  }
   {
     unsigned long t0 = micros();
     while (digitalRead(LORA_BUSY_PIN) && (micros() - t0) < 100) {}
   }
-  sx126x_set_lora_pkt_params(&bsRadioCtx, &pktParams);
+  sx126x_status_t stPkt = sx126x_set_lora_pkt_params(&bsRadioCtx, &pktParams);
+  if (stPkt != SX126X_STATUS_OK) {
+    Serial.print("BS RX: set_lora_pkt_params rejected st="); Serial.println(stPkt);
+    return;  // would RX with stale pkt params -> wrong header mode / payload len
+  }
 
-  sx126x_clear_irq_status(&bsRadioCtx, SX126X_IRQ_ALL);
+  sx126x_status_t stClr = sx126x_clear_irq_status(&bsRadioCtx, SX126X_IRQ_ALL);
+  if (stClr != SX126X_STATUS_OK) {
+    Serial.print("BS RX: clear_irq_status rejected st="); Serial.println(stClr);
+    return;
+  }
   dio1Fired = false;
 
   sx126x_status_t st = sx126x_set_rx_with_timeout_in_rtc_step(&bsRadioCtx, timeoutRtcSteps);
@@ -289,12 +328,11 @@ void bsRadioStartRxTimeout(uint32_t timeoutRtcSteps,
     bsRxIssuedUs = esp_timer_get_time();
     bsLedOn();
     if (LOG_BS_RX_START) {
-      int64_t s = bsGetSlotIndex();
-      uint8_t seqIdx = (uint8_t)(((uint64_t)(s - bsSyncSeedSlotIndex)) % SLOT_SEQUENCE_LEN);
-      Serial.print("BS RxStart: slot="); Serial.print((long long)s);
+      Serial.print("BS RxStart: slot="); Serial.print((long long)slotIndex);
       Serial.print(" seq="); Serial.print(seqIdx);
-      Serial.print(" win="); Serial.print(windowModeName(SLOT_SEQUENCE[seqIdx]));
-      Serial.print(" ch="); Serial.print(currentTunedChannel);
+      Serial.print(" win="); Serial.print(windowModeName(win));
+      Serial.print(" ch="); Serial.print(ch);
+      Serial.print(" tunedCh="); Serial.print(currentTunedChannel);
       Serial.print(" hop="); Serial.print(hopIndexOf(currentTunedChannel));
       Serial.print(" timeout="); Serial.print((uint32_t)(timeoutRtcSteps * 15.625f));
       Serial.println("us");
@@ -312,13 +350,18 @@ void bsRadioStartRxTimeout(uint32_t timeoutRtcSteps,
 }
 
 bool bsRadioStartTx(const uint8_t* pkt, size_t len) {
+  // Snapshot the slot context ONCE at entry so all subsequent logs in this
+  // function refer to the same decision, not whatever bsGetSlotIndex() drifts
+  // to during the SPI sequence. (TX is always WIN_CMD on activeChannel.)
+  const int64_t  txSlot   = bsGetSlotIndex();
+  const uint8_t  txSeqIdx = (uint8_t)(((uint64_t)(txSlot - bsSyncSeedSlotIndex)) % SLOT_SEQUENCE_LEN);
+  const uint8_t  txCh     = activeChannel;
   if (LOG_BS_TX_ATTEMPT) {
-    int64_t s = bsGetSlotIndex();
-    uint8_t seqIdx = (uint8_t)(((uint64_t)(s - bsSyncSeedSlotIndex)) % SLOT_SEQUENCE_LEN);
-    Serial.print("BS TxAttempt: slot="); Serial.print((long long)s);
-    Serial.print(" seq="); Serial.print(seqIdx);
-    Serial.print(" win="); Serial.print(windowModeName(SLOT_SEQUENCE[seqIdx]));
-    Serial.print(" ch="); Serial.print(currentTunedChannel);
+    Serial.print("BS TxAttempt: slot="); Serial.print((long long)txSlot);
+    Serial.print(" seq="); Serial.print(txSeqIdx);
+    Serial.print(" win="); Serial.print(windowModeName(WIN_CMD));
+    Serial.print(" ch="); Serial.print(txCh);
+    Serial.print(" tunedCh="); Serial.print(currentTunedChannel);
     Serial.print(" len="); Serial.print((unsigned)len);
     Serial.print(" busy="); Serial.println(digitalRead(LORA_BUSY_PIN));
   }
@@ -327,18 +370,38 @@ bool bsRadioStartTx(const uint8_t* pkt, size_t len) {
     return false;
   }
 
-  // Commands always use normal modulation on the command channel.
+  // Commands always use the command channel (activeChannel) with normal modulation.
+  // applyFrequency checks the SPI return — if it failed (HAL drop / chip rejection)
+  // we'd be TX'ing on whatever channel the radio was last tuned to, which on this
+  // base station is more often than not a hop channel, not the command channel.
+  if (!applyFrequency(activeChannel)) {
+    Serial.println("BS TX: applyFrequency failed — abort TX");
+    return false;
+  }
+
   sx126x_mod_params_lora_t mp = buildModParams(CFG_NORMAL);
-  sx126x_set_lora_mod_params(&bsRadioCtx, &mp);
+  sx126x_status_t stMod = sx126x_set_lora_mod_params(&bsRadioCtx, &mp);
+  if (stMod != SX126X_STATUS_OK) {
+    Serial.print("BS TX: set_lora_mod_params rejected st="); Serial.println(stMod);
+    return false;
+  }
   {
     unsigned long t0 = micros();
     while (digitalRead(LORA_BUSY_PIN) && (micros() - t0) < 100) {}
   }
 
   sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL,(uint8_t)len);
-  sx126x_set_lora_pkt_params(&bsRadioCtx, &pp);
+  sx126x_status_t stPkt = sx126x_set_lora_pkt_params(&bsRadioCtx, &pp);
+  if (stPkt != SX126X_STATUS_OK) {
+    Serial.print("BS TX: set_lora_pkt_params rejected st="); Serial.println(stPkt);
+    return false;
+  }
 
-  sx126x_clear_irq_status(&bsRadioCtx, SX126X_IRQ_ALL);
+  sx126x_status_t stClr = sx126x_clear_irq_status(&bsRadioCtx, SX126X_IRQ_ALL);
+  if (stClr != SX126X_STATUS_OK) {
+    Serial.print("BS TX: clear_irq_status rejected st="); Serial.println(stClr);
+    return false;
+  }
   dio1Fired = false;
 
   sx126x_status_t st = sx126x_write_buffer(&bsRadioCtx, 0, pkt, (uint8_t)len);
@@ -362,12 +425,11 @@ bool bsRadioStartTx(const uint8_t* pkt, size_t len) {
     bsRadioState = BS_RADIO_TX_ACTIVE;
     bsLedOn();
     if (LOG_BS_TX_START) {
-      int64_t s = bsGetSlotIndex();
-      uint8_t seqIdx = (uint8_t)(((uint64_t)(s - bsSyncSeedSlotIndex)) % SLOT_SEQUENCE_LEN);
-      Serial.print("BS TxStart: slot="); Serial.print((long long)s);
-      Serial.print(" seq="); Serial.print(seqIdx);
-      Serial.print(" win="); Serial.print(windowModeName(SLOT_SEQUENCE[seqIdx]));
-      Serial.print(" ch="); Serial.print(currentTunedChannel);
+      Serial.print("BS TxStart: slot="); Serial.print((long long)txSlot);
+      Serial.print(" seq="); Serial.print(txSeqIdx);
+      Serial.print(" win="); Serial.print(windowModeName(WIN_CMD));
+      Serial.print(" ch="); Serial.print(txCh);
+      Serial.print(" tunedCh="); Serial.print(currentTunedChannel);
       Serial.print(" len="); Serial.println((unsigned)len);
     }
     return true;
@@ -378,7 +440,26 @@ bool bsRadioStartTx(const uint8_t* pkt, size_t len) {
 }
 
 void bsRadioStandby() {
-  sx126x_set_standby(&bsRadioCtx, SX126X_STANDBY_CFG_RC);
+  // The HAL drops SPI commands while BUSY is high. If our standby command got
+  // dropped, the chip is NOT in standby — and if we set bsRadioState=STANDBY
+  // anyway, the slot machine will think the radio is idle and re-issue set_rx
+  // every loop, all of which the chip will reject because it's still mid-RX.
+  // That's the wedged-BUSY loop. Spin briefly for BUSY, check the return, and
+  // only update state on success.
+  {
+    unsigned long t0 = micros();
+    while (digitalRead(LORA_BUSY_PIN) && (micros() - t0) < 200) {}
+  }
+  if (digitalRead(LORA_BUSY_PIN)) {
+    Serial.println("BS standby: BUSY stuck — standby NOT issued, state unchanged");
+    return;
+  }
+  sx126x_status_t st = sx126x_set_standby(&bsRadioCtx, SX126X_STANDBY_CFG_RC);
+  if (st != SX126X_STATUS_OK) {
+    Serial.print("BS standby: set_standby rejected st="); Serial.print(st);
+    Serial.println(" — state unchanged");
+    return;
+  }
   bsRadioState = BS_RADIO_STANDBY;
   bsLedOff();
 }
@@ -621,7 +702,8 @@ void bsHandleRadio() {
   if (bsRadioState == BS_RADIO_STANDBY) {
     sx126x_mod_params_lora_t mp = buildModParams(CFG_NORMAL);
     sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL,255);
-    bsRadioStartRxTimeout((uint32_t)(100'000UL / 15.625f), mp, pp, false);
+    bsRadioStartRxTimeout((uint32_t)(100'000UL / 15.625f), mp, pp, false,
+                          0, 0, WIN_TELEM, currentTunedChannel);
   }
   if (nowMs - bsTestLastTxMs >= 5000) {
     bsTestLastTxMs = nowMs;
@@ -713,10 +795,12 @@ void bsHandleRadio() {
 
     if (bsRadioState == BS_RADIO_STANDBY) {
       uint8_t scanCh = hopSeq[2];  // TODO: random per-attempt channel
-      applyFrequency(scanCh);
+      if (!applyFrequency(scanCh)) return;  // skip — would listen on wrong channel
       sx126x_mod_params_lora_t mp = buildModParams(CFG_NORMAL);
       sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL,255);
-      bsRadioStartRxTimeout(0, mp, pp, false);
+      // SCAN_SEARCHING — slot context is meaningless (we have no anchor yet);
+      // pass 0 / WIN_TELEM / scanCh just so the log fields exist.
+      bsRadioStartRxTimeout(0, mp, pp, false, 0, 0, WIN_TELEM, scanCh);
       if (LOG_BS_RX_START) {
         Serial.print("BS SCAN: searching on ch="); Serial.println(scanCh);
       }
@@ -821,16 +905,16 @@ void bsHandleRadio() {
   uint32_t timeoutSteps = (uint32_t)(rxTimeoutUs / 15.625f);
 
   if (win == WIN_TELEM) {
-    applyFrequency(ch);
+    if (!applyFrequency(ch)) return;  // skip — would listen on wrong channel
     sx126x_mod_params_lora_t mp = buildModParams(CFG_NORMAL);
     sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL, 255);
-    bsRadioStartRxTimeout(timeoutSteps, mp, pp, false);
+    bsRadioStartRxTimeout(timeoutSteps, mp, pp, false, slotIndex, seqIdx, win, ch);
 
   } else if (win == WIN_LR) {
-    applyFrequency(ch);
+    if (!applyFrequency(ch)) return;  // skip — would listen on wrong channel
     sx126x_mod_params_lora_t mp = buildModParams(CFG_LR);
     sx126x_pkt_params_lora_t pp = buildPktParams(CFG_LR, 3);
-    bsRadioStartRxTimeout(timeoutSteps, mp, pp, true);
+    bsRadioStartRxTimeout(timeoutSteps, mp, pp, true, slotIndex, seqIdx, win, ch);
 
   } else if (win == WIN_CMD) {
     // Signal the main loop's command dispatcher.
@@ -838,13 +922,13 @@ void bsHandleRadio() {
     // If no command actually queued, fall back to listening on the backhaul channel
     // for the remainder of this slot.
     if (!cmdTx.active && bsRadioState == BS_RADIO_STANDBY) {
-      applyFrequency(bhChannel);
+      if (!applyFrequency(bhChannel)) return;  // skip — would listen on wrong channel
       sx126x_mod_params_lora_t mp = {
         (sx126x_lora_sf_t)bhSF, bwKHzToEnum(channelToBwKHz(bhChannel)),
         SX126X_LORA_CR_4_5, 0
       };
       sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL, 255);
-      bsRadioStartRxTimeout(timeoutSteps, mp, pp, false);
+      bsRadioStartRxTimeout(timeoutSteps, mp, pp, false, slotIndex, seqIdx, win, bhChannel);
     }
 
   } else if (win == WIN_OFF) {

@@ -123,7 +123,8 @@ bool bsRadioInit();
 void bsRadioApplyConfig_BLOCKING();
 
 void bsRadioStartRxTimeout(uint32_t timeoutRtcSteps, const sx126x_mod_params_lora_t& modParams,
-                            const sx126x_pkt_params_lora_t& pktParams, bool isLR);
+                            const sx126x_pkt_params_lora_t& pktParams, bool isLR,
+                            int64_t slotIndex, uint8_t seqIdx, WindowMode win, uint8_t ch);
 bool bsRadioStartTx(const uint8_t* pkt, size_t len);
 
 void bsRadioStandby();

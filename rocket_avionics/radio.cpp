@@ -91,22 +91,44 @@ static sx126x_pkt_params_lora_t buildPktParams(RadioCfg cfg, uint8_t pldLen) {
 // derived independently of slotIndex (user requirement: hop and slot are independent).
 static uint8_t currentTunedChannel = DEFAULT_CHANNEL;
 
-// Set radio frequency from channel index. Radio must be in standby.
-static void applyFrequency(uint8_t ch) {
+// Returns true if the frequency was actually applied. The HAL drops SPI commands
+// when BUSY is high (returns SX126X_HAL_STATUS_ERROR -> non-OK sx126x_status_t).
+// Spin briefly for BUSY to clear, then issue and check the command. Only update
+// currentTunedChannel on success, otherwise we'd lie about what channel the
+// chip is on and the next set_rx would listen on the wrong frequency.
+static bool applyFrequency(uint8_t ch) {
+  {
+    unsigned long t0 = micros();
+    while (digitalRead(LORA_BUSY_PIN) && (micros() - t0) < 100) {}
+  }
+  if (digitalRead(LORA_BUSY_PIN)) {
+    Serial.print("RK applyFrequency: BUSY stuck, freq NOT applied ch="); Serial.println(ch);
+    return false;
+  }
   float freqMHz = channelToFreqMHz(ch);
   uint32_t freqHz = (uint32_t)(freqMHz * 1e6f + 0.5f);
-  sx126x_set_rf_freq(&radioCtx, freqHz);
+  sx126x_status_t st = sx126x_set_rf_freq(&radioCtx, freqHz);
+  if (st != SX126X_STATUS_OK) {
+    Serial.print("RK applyFrequency: set_rf_freq rejected st="); Serial.print(st);
+    Serial.print(" ch="); Serial.println(ch);
+    return false;
+  }
   currentTunedChannel = ch;
+  return true;
 }
 
 // SX1262 errata §15.3: after any RX with implicit header + timeout, stop the RTC timer
 // to prevent a spurious timeout IRQ in the next RX mode.
 static void applyImplicitHeaderErrataFix() {
   uint8_t val = 0;
-  sx126x_write_register(&radioCtx, 0x0920, &val, 1);
-  sx126x_read_register(&radioCtx, 0x0944, &val, 1);
+  sx126x_status_t st;
+  st = sx126x_write_register(&radioCtx, 0x0920, &val, 1);
+  if (st != SX126X_STATUS_OK) { Serial.print("RK errata: write 0x0920 fail st="); Serial.println(st); return; }
+  st = sx126x_read_register(&radioCtx, 0x0944, &val, 1);
+  if (st != SX126X_STATUS_OK) { Serial.print("RK errata: read 0x0944 fail st="); Serial.println(st); return; }
   val |= 0x02;
-  sx126x_write_register(&radioCtx, 0x0944, &val, 1);
+  st = sx126x_write_register(&radioCtx, 0x0944, &val, 1);
+  if (st != SX126X_STATUS_OK) { Serial.print("RK errata: write 0x0944 fail st="); Serial.println(st); }
 }
 
 static void ledOnTX()  { ledcWrite(LED_PIN, 64); }
@@ -235,14 +257,14 @@ size_t buildLRPacketCore(uint8_t* buf) {
 void radioStartRxTimeout(uint32_t timeoutRtcSteps,
                          const sx126x_mod_params_lora_t& modParams,
                          const sx126x_pkt_params_lora_t& pktParams,
-                         bool isLR) {
+                         bool isLR,
+                         int64_t slotIndex, uint8_t seqIdx, WindowMode win, uint8_t ch) {
   if (LOG_RK_RX_ATTEMPT) {
-    int64_t s = radioGetSlotIndex();
-    uint8_t seqIdx = (uint8_t)(((uint64_t)(s - syncSeedSlotIndex)) % SLOT_SEQUENCE_LEN);
-    Serial.print("RxAttempt: slot="); Serial.print((long long)s);
+    Serial.print("RxAttempt: slot="); Serial.print((long long)slotIndex);
     Serial.print(" seq="); Serial.print(seqIdx);
-    Serial.print(" win="); Serial.print(windowModeName(SLOT_SEQUENCE[seqIdx]));
-    Serial.print(" ch="); Serial.print(currentTunedChannel);
+    Serial.print(" win="); Serial.print(windowModeName(win));
+    Serial.print(" ch="); Serial.print(ch);
+    Serial.print(" tunedCh="); Serial.print(currentTunedChannel);
     Serial.print(" busy="); Serial.println(digitalRead(LORA_BUSY_PIN));
   }
   if (digitalRead(LORA_BUSY_PIN)) {
@@ -250,15 +272,28 @@ void radioStartRxTimeout(uint32_t timeoutRtcSteps,
     return;
   }
 
-  // Apply modulation and packet params unconditionally.
-  sx126x_set_lora_mod_params(&radioCtx, &modParams);
+  // Apply modulation and packet params unconditionally — checking returns since
+  // the HAL silently drops SPI commands when BUSY is high.
+  sx126x_status_t stMod = sx126x_set_lora_mod_params(&radioCtx, &modParams);
+  if (stMod != SX126X_STATUS_OK) {
+    Serial.print("RX: set_lora_mod_params rejected st="); Serial.println(stMod);
+    return;  // would RX with stale modulation -> garbage demod
+  }
   {
     unsigned long t0 = micros();
     while (digitalRead(LORA_BUSY_PIN) && (micros() - t0) < 100) {}
   }
-  sx126x_set_lora_pkt_params(&radioCtx, &pktParams);
+  sx126x_status_t stPkt = sx126x_set_lora_pkt_params(&radioCtx, &pktParams);
+  if (stPkt != SX126X_STATUS_OK) {
+    Serial.print("RX: set_lora_pkt_params rejected st="); Serial.println(stPkt);
+    return;
+  }
 
-  sx126x_clear_irq_status(&radioCtx, SX126X_IRQ_ALL);
+  sx126x_status_t stClr = sx126x_clear_irq_status(&radioCtx, SX126X_IRQ_ALL);
+  if (stClr != SX126X_STATUS_OK) {
+    Serial.print("RX: clear_irq_status rejected st="); Serial.println(stClr);
+    return;
+  }
   dio1Fired = false;
 
   sx126x_status_t st = sx126x_set_rx_with_timeout_in_rtc_step(&radioCtx, timeoutRtcSteps);
@@ -269,12 +304,11 @@ void radioStartRxTimeout(uint32_t timeoutRtcSteps,
     savedIsLR       = isLR;
     ledOnRX();
     if (LOG_RK_RX_START) {
-      int64_t s = radioGetSlotIndex();
-      uint8_t seqIdx = (uint8_t)(((uint64_t)(s - syncSeedSlotIndex)) % SLOT_SEQUENCE_LEN);
-      Serial.print("RxStart: slot="); Serial.print((long long)s);
+      Serial.print("RxStart: slot="); Serial.print((long long)slotIndex);
       Serial.print(" seq="); Serial.print(seqIdx);
-      Serial.print(" win="); Serial.print(windowModeName(SLOT_SEQUENCE[seqIdx]));
-      Serial.print(" ch="); Serial.print(currentTunedChannel);
+      Serial.print(" win="); Serial.print(windowModeName(win));
+      Serial.print(" ch="); Serial.print(ch);
+      Serial.print(" tunedCh="); Serial.print(currentTunedChannel);
       Serial.print(" hop="); Serial.print(hopIndexOf(currentTunedChannel));
       Serial.print(" timeout="); Serial.print((uint32_t)(timeoutRtcSteps * 15.625f));
       Serial.println("us");
@@ -293,16 +327,16 @@ void radioStartRxTimeout(uint32_t timeoutRtcSteps,
 bool radioStartTx(const uint8_t* pkt, size_t len,
                   const sx126x_mod_params_lora_t& modParams,
                   const sx126x_pkt_params_lora_t& pktParams,
-                  bool isLR) {
+                  bool isLR,
+                  int64_t slotIndex, uint8_t seqIdx, WindowMode win, uint8_t ch) {
   if (LOG_RK_TX_ATTEMPT) {
     int64_t now = esp_timer_get_time();
-    int64_t s = radioGetSlotIndex();
-    int64_t slotStart = syncAnchorUs + (s - syncSeedSlotIndex) * (int64_t)SLOT_DURATION_US;
-    uint8_t seqIdx = (uint8_t)(((uint64_t)(s - syncSeedSlotIndex)) % SLOT_SEQUENCE_LEN);
-    Serial.print("TxAttempt: slot="); Serial.print((long long)s);
+    int64_t slotStart = syncAnchorUs + (slotIndex - syncSeedSlotIndex) * (int64_t)SLOT_DURATION_US;
+    Serial.print("TxAttempt: slot="); Serial.print((long long)slotIndex);
     Serial.print(" seq="); Serial.print(seqIdx);
-    Serial.print(" win="); Serial.print(windowModeName(SLOT_SEQUENCE[seqIdx]));
-    Serial.print(" ch="); Serial.print(currentTunedChannel);
+    Serial.print(" win="); Serial.print(windowModeName(win));
+    Serial.print(" ch="); Serial.print(ch);
+    Serial.print(" tunedCh="); Serial.print(currentTunedChannel);
     Serial.print(" len="); Serial.print((unsigned)len);
     Serial.print(" intoSlotUs="); Serial.print((long long)(now - slotStart));
     Serial.print(" busy="); Serial.println(digitalRead(LORA_BUSY_PIN));
@@ -312,8 +346,13 @@ bool radioStartTx(const uint8_t* pkt, size_t len,
     return false;
   }
 
-  // Apply modulation and packet params unconditionally.
-  sx126x_set_lora_mod_params(&radioCtx, &modParams);
+  // Apply modulation and packet params unconditionally — checking returns since
+  // the HAL silently drops SPI commands when BUSY is high.
+  sx126x_status_t stMod = sx126x_set_lora_mod_params(&radioCtx, &modParams);
+  if (stMod != SX126X_STATUS_OK) {
+    Serial.print("TX: set_lora_mod_params rejected st="); Serial.println(stMod);
+    return false;
+  }
   {
     unsigned long t0 = micros();
     while (digitalRead(LORA_BUSY_PIN) && (micros() - t0) < 100) {}
@@ -321,9 +360,17 @@ bool radioStartTx(const uint8_t* pkt, size_t len,
   // For TX, rebuild pkt params with actual payload length.
   sx126x_pkt_params_lora_t ppTx = pktParams;
   ppTx.pld_len_in_bytes = (uint8_t)len;
-  sx126x_set_lora_pkt_params(&radioCtx, &ppTx);
+  sx126x_status_t stPkt = sx126x_set_lora_pkt_params(&radioCtx, &ppTx);
+  if (stPkt != SX126X_STATUS_OK) {
+    Serial.print("TX: set_lora_pkt_params rejected st="); Serial.println(stPkt);
+    return false;
+  }
 
-  sx126x_clear_irq_status(&radioCtx, SX126X_IRQ_ALL);
+  sx126x_status_t stClr = sx126x_clear_irq_status(&radioCtx, SX126X_IRQ_ALL);
+  if (stClr != SX126X_STATUS_OK) {
+    Serial.print("TX: clear_irq_status rejected st="); Serial.println(stClr);
+    return false;
+  }
   dio1Fired = false;
 
   sx126x_status_t st = sx126x_write_buffer(&radioCtx, 0, pkt, (uint8_t)len);
@@ -349,12 +396,11 @@ bool radioStartTx(const uint8_t* pkt, size_t len,
     savedIsLR      = isLR;
     ledOnTX();
     if (LOG_RK_TX_START) {
-      int64_t s = radioGetSlotIndex();
-      uint8_t seqIdx = (uint8_t)(((uint64_t)(s - syncSeedSlotIndex)) % SLOT_SEQUENCE_LEN);
-      Serial.print("TxStart: slot="); Serial.print((long long)s);
+      Serial.print("TxStart: slot="); Serial.print((long long)slotIndex);
       Serial.print(" seq="); Serial.print(seqIdx);
-      Serial.print(" win="); Serial.print(windowModeName(SLOT_SEQUENCE[seqIdx]));
-      Serial.print(" ch="); Serial.print(currentTunedChannel);
+      Serial.print(" win="); Serial.print(windowModeName(win));
+      Serial.print(" ch="); Serial.print(ch);
+      Serial.print(" tunedCh="); Serial.print(currentTunedChannel);
       Serial.print(" hop="); Serial.print(hopIndexOf(currentTunedChannel));
       Serial.print(" len="); Serial.println((unsigned)len);
     }
@@ -369,7 +415,25 @@ void radioStandby() {
 #ifdef LORA_FEM_PA_PIN
   digitalWrite(LORA_FEM_PA_PIN, LOW);
 #endif
-  sx126x_set_standby(&radioCtx, SX126X_STANDBY_CFG_RC);
+  // The HAL drops SPI commands while BUSY is high. If our standby command got
+  // dropped and we set radioState=STANDBY anyway, the slot machine will think
+  // the radio is idle and re-issue set_rx every loop, all of which the chip
+  // rejects because it's still mid-RX. Spin briefly for BUSY, check the return,
+  // and only update state on success.
+  {
+    unsigned long t0 = micros();
+    while (digitalRead(LORA_BUSY_PIN) && (micros() - t0) < 200) {}
+  }
+  if (digitalRead(LORA_BUSY_PIN)) {
+    Serial.println("standby: BUSY stuck — standby NOT issued, state unchanged");
+    return;
+  }
+  sx126x_status_t st = sx126x_set_standby(&radioCtx, SX126X_STANDBY_CFG_RC);
+  if (st != SX126X_STATUS_OK) {
+    Serial.print("standby: set_standby rejected st="); Serial.print(st);
+    Serial.println(" — state unchanged");
+    return;
+  }
   radioState = RADIO_STANDBY;
   ledOff();
 }
@@ -509,7 +573,8 @@ void nonblockingRadio() {
     sx126x_mod_params_lora_t mp = buildModParams(CFG_NORMAL);
     sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL,255);
     uint32_t timeoutUs = 100'000UL;
-    radioStartRxTimeout((uint32_t)(timeoutUs / 15.625f), mp, pp, false);
+    radioStartRxTimeout((uint32_t)(timeoutUs / 15.625f), mp, pp, false,
+                        0, 0, WIN_TELEM, currentTunedChannel);
   }
 }
 #else
@@ -658,15 +723,15 @@ void nonblockingRadio() {
 
   if (win == WIN_TELEM) {
     if (txSendingEnabled) {
-      applyFrequency(ch);
+      if (!applyFrequency(ch)) return;  // skip — would TX on wrong channel
       sx126x_mod_params_lora_t mp = buildModParams(CFG_NORMAL);
       uint8_t pkt[255];
       size_t len = buildTelemetryPacket(pkt);
       sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL,(uint8_t)len);
-      radioStartTx(pkt, len, mp, pp, false);
+      radioStartTx(pkt, len, mp, pp, false, slotIndex, seqIdx, win, ch);
     } else {
       // TX disabled — listen on this channel.
-      applyFrequency(ch);
+      if (!applyFrequency(ch)) return;  // skip — would listen on wrong channel
       sx126x_mod_params_lora_t mp = buildModParams(CFG_NORMAL);
       int64_t remainUs = slotEndUsFor(slotIndex) - now;
       if (remainUs < (int64_t)BS_RX_MIN_REMAINING_US) return;
@@ -675,21 +740,22 @@ void nonblockingRadio() {
       int64_t rxTimeoutUs = remainUs - (int64_t)BS_RX_TAIL_GUARD_US;
       if (rxTimeoutUs < 0) rxTimeoutUs = 0;
       sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL,255);
-      radioStartRxTimeout((uint32_t)(rxTimeoutUs / 15.625f), mp, pp, false);
+      radioStartRxTimeout((uint32_t)(rxTimeoutUs / 15.625f), mp, pp, false,
+                          slotIndex, seqIdx, win, ch);
     }
 
   } else if (win == WIN_LR) {
     if (txSendingEnabled) {
-      applyFrequency(ch);
+      if (!applyFrequency(ch)) return;  // skip — would TX on wrong channel
       sx126x_mod_params_lora_t mp = buildModParams(CFG_LR);
       uint8_t pkt[3];
       size_t len = buildLRPacketCore(pkt);
       sx126x_pkt_params_lora_t pp = buildPktParams(CFG_LR,(uint8_t)len);
-      radioStartTx(pkt, len, mp, pp, true);
+      radioStartTx(pkt, len, mp, pp, true, slotIndex, seqIdx, win, ch);
     }
 
   } else if (win == WIN_CMD) {
-    applyFrequency(activeChannel);
+    if (!applyFrequency(activeChannel)) return;  // skip — would listen on wrong channel
     sx126x_mod_params_lora_t mp = buildModParams(CFG_NORMAL);
 
     bool hasRecentCommand = (lastValidCmdUs != 0 &&
@@ -705,7 +771,8 @@ void nonblockingRadio() {
     if (rxTimeoutUs < 0) rxTimeoutUs = 0;
 
     sx126x_pkt_params_lora_t pp = buildPktParams(CFG_NORMAL,255);
-    radioStartRxTimeout((uint32_t)(rxTimeoutUs / 15.625f), mp, pp, false);
+    radioStartRxTimeout((uint32_t)(rxTimeoutUs / 15.625f), mp, pp, false,
+                        slotIndex, seqIdx, win, activeChannel);
 
   } else if (win == WIN_OFF) {
     radioStandby();

@@ -86,16 +86,21 @@ void radioApplyConfig_BLOCKING();
 
 // Start windowed RX with a timeout in raw RTC steps (15.625 µs per tick).
 // Saves modulation params for later airtime calc. isLR = true for implicit-header mode.
+// slot/seq/win/ch are the slot machine's snapshot at decision time — passed
+// through so logs reflect what was actually decided, not what radioGetSlotIndex()
+// returns after SPI work has elapsed.
 void radioStartRxTimeout(uint32_t timeoutRtcSteps,
                          const sx126x_mod_params_lora_t& modParams,
                          const sx126x_pkt_params_lora_t& pktParams,
-                         bool isLR);
+                         bool isLR,
+                         int64_t slotIndex, uint8_t seqIdx, WindowMode win, uint8_t ch);
 
 // Start async TX. Returns true if TX started.
 bool radioStartTx(const uint8_t* pkt, size_t len,
                   const sx126x_mod_params_lora_t& modParams,
                   const sx126x_pkt_params_lora_t& pktParams,
-                  bool isLR);
+                  bool isLR,
+                  int64_t slotIndex, uint8_t seqIdx, WindowMode win, uint8_t ch);
 
 // Put radio in standby.
 void radioStandby();
