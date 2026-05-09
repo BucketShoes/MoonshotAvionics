@@ -35,7 +35,8 @@ inline void rederiveHopSequence(uint8_t cmdChannel) {
 
   for (uint8_t i = 63; i > 0; i--) {
     lcg = lcg * 1664525UL + 1013904223UL;  // Numerical Recipes LCG
-    //uint8_t j = (uint8_t)(lcg >> 16) % (i + 1);
+    //Turned off actual hopping shuffle for testing
+    //uint8_t j = (uint8_t)(lcg >> 16) % (i + 1); 
     //uint8_t tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp;
   }
 

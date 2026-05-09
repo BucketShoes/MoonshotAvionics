@@ -146,7 +146,7 @@ The received channel is known from context (the frequency we were listening on);
 
 ## Long-Range Packets
 
-WIN_LR packets are extremely payload-limited. At SF12/BW125, airtime for a few bytes exceeds 400ms — always overruns the 200ms slot, hence always followed by WIN_CONTINUE.
+WIN_LR packets are extremely payload-limited. At SF12/BW125, airtime for a few bytes exceeds 400ms — always overruns the 200ms slot, hence followed by WIN_CONTINUE when using timeslots short enough that the airtime would overrun every time.
 (EDIT: others might overrun, e.g. command will overruyn if there is an actual command, but lr always overruns, so the following slot is meaningless. continue avoids confusion)
 
 - Payload: ~3 bytes — packed GPS coordinates + flags. Exact format TBD. (EDIT: format in packet formats doc)

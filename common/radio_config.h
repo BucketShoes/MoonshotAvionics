@@ -37,7 +37,8 @@ enum WindowMode : uint8_t {
 // Length must be coprime with NUM_HOP_CHANNELS (23) for full channel coverage.
 
 static const WindowMode SLOT_SEQUENCE[] = {
-  WIN_LR, WIN_CONTINUE, WIN_TELEM, WIN_TELEM,
+  //WIN_LR, WIN_CONTINUE, WIN_TELEM, WIN_TELEM,
+  WIN_LR, WIN_TELEM, WIN_TELEM, WIN_TELEM,
   WIN_CMD, WIN_TELEM, WIN_TELEM, WIN_TELEM,
   WIN_TELEM, WIN_TELEM, WIN_TELEM, WIN_TELEM,
 };
