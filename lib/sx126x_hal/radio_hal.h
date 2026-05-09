@@ -47,9 +47,9 @@
 //
 // BUSY_INIT_LONG_TIMEOUT_MS: post-reset / post-wakeup wait (radioWaitBusy*).
 //   Chip can take many ms after reset before BUSY drops. Init-only.
-#define BUSY_RUNTIME_TIMEOUT_US      2000
-#define BUSY_INIT_TIMEOUT_MS         10
-#define BUSY_INIT_LONG_TIMEOUT_MS    5000
+#define BUSY_RUNTIME_TIMEOUT_US      20000
+#define BUSY_INIT_TIMEOUT_MS         100
+#define BUSY_INIT_LONG_TIMEOUT_MS    50000
 
 // ===================== HAL CONTEXT =====================
 
