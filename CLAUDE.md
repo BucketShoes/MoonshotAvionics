@@ -10,29 +10,29 @@ Most of this codebase is cosmetic or tracking-only (telemetry display, logging, 
 
 - **Pyro channels exist** (parachute ejection charges) and are triggered automatically by flight phase logic. Bugs here have real consequences. (Setting off the charge near someone, or failing to deploy and landing on someone)
 - **The pyro decision path is**: `sensors.h/cpp` → `flight.h/cpp` (phase state machine) → pyro GPIO. Flight phase data also feeds into `telemetry.h/cpp` (logged and transmitted).
-- **Future active aero**: The architecture is being built for active aerodynamic control in future versions; so must have tight timing determinism.
+- **Project scope: parachute deployment only.** Active aerodynamic control / TVC is no longer a goal. The tight timing determinism that target required is no longer needed. Pyro for parachute deployment tolerates ms-scale loop variation. (Older comments and memories that assert active-control constraints are obsolete.)
 - **Flight warnings are noted in `flight.h` and `flight.cpp`** but the sensors feeding those decisions are upstream.
 - **Arming is required** before any automatic pyro action. Ground test firing is command-only (FIRE PYRO command, while armed).
-- **Future direction**: ESP32S3 may eventually be a telemetry/logging coprocessor alongside a dedicated STM32 primary flight computer. The ESP32 retains pyro capability as backup even then. Active control surfaces (loop timing constraints) are planned but not yet implemented. For now, ESP32S3 will be the primary flight controller.
 - **When touching flight logic or sensor data used in flight decisions**, apply extra care and flag any tradeoffs or edge cases explicitly, right at the end of the message so they dont get missed (in addition to inline discussion)
 
-## Non-blocking rule
+## Loop timing rule
 
-**This is a safety-critical hard requirement, not a style preference.** Pyro channels are driven by the main loop. Any block >1ms while armed risks a misfire, a late fire, or a charge staying energised too long. Active control surfaces (planned) have tighter requirements than pyro. The 1ms max is a per-iteration ceiling, not an average.
+Pyro for parachute deployment is the only safety-critical loop work. It tolerates ms-scale variation. Budget:
 
-"Non-blocking" has three tiers — classify any new work explicitly:
-- **≤1µs:** Always fine if limited to finitely many during any loop() iteration. No tracking needed.
-- **≤100µs:** Acceptable if bounded and added to the timing budget list in `main.cpp`. Must not push total over 1ms.
-- **>100µs or unbounded:** Not acceptable in armed path. Must be a state machine, gated behind `!isArmed()`, or not added at all.
+- **Typical loop iteration: ~1ms is fine.** No need to chase µs.
+- **Worst-case iteration: up to ~10ms is acceptable.**
+- **Anything that can exceed 10ms** must be gated behind `!isArmed()` or implemented as a state machine.
+- **Anything over ~1ms** still goes in the timing budget list in `main.cpp` so the worst-case sum stays auditable. Sub-ms work doesn't need to be listed.
 
-**BLE caveat is local to BLE.** BLE was added with an explicit "disable during flight if needed" mentality, based on testing. In general, major new features will also be subject to being removed or didsabled during flight if they can't achieve the timing limits, but approaches used in ble don't necesarily translate to general functionality.
+This is a deliberate relaxation from the older "1ms hard ceiling / 1000Hz loop" rule. That rule existed for active aero control, which is no longer a project goal. Reliability of telemetry and recovery (don't lose the rocket) now outweighs µs-precision.
 
-- `executeLogDownload()` is the only intentionally blocking call and is refused while armed.
-- Sector erases in `nonblockingLogging()` block ~30–50ms. This is a **known defect**, acceptable only because active control is not yet implemented. It is on the TODO list to fix before active control surfaces are added. Do not treat it as a precedent.
-- `DO_NOT_CALL_WHILE_ARMED_radioWaitBusy_WARNING_LONG_BLOCKING()` in `radio_hal.h` blocks up to 100ms. It is **init-only** (called from `setup()` paths only, inside functions named `*_BLOCKING`). Never call it from any code reachable while armed. 100ms is absolutely unacceptable while armed — this will kill pyro timing or starve active aero controls.
-- **Per-slot radio config switching** (e.g. WIN_LR ↔ normal) uses `applyCfgIfNeeded()` / `bsApplyCfgIfNeeded()`: two SPI commands with up to 100µs spin between them (BUSY clears in <20µs typical). Called once per slot boundary change. Do not use `*_BLOCKING` functions for slot transitions. A 100µs spin is acceptable once per loop(). 100ms is not acceptable in any loop, no matter how rare, unless it is only permitted after checking the arm flag is false (and arm is refused if the proplem is present)
-
-- If radio power-cycling while armed is ever added, a non-blocking state machine must be used instead of `*_BLOCKING` calls.
+Implications:
+- Libraries with internal blocking waits up to ~10ms (e.g. RadioLib) are acceptable. Don't reject them on timing grounds.
+- BLE runs permanently during flight — no longer needs the "disable if needed" caveat.
+- Don't propose elaborate non-blocking state machines to shave µs off a sub-10ms operation.
+- Total per-loop worst-case still must stay under 10ms. If multiple ≥1ms operations could line up in a single iteration, that needs attention.
+- `executeLogDownload()` is the only intentionally fully-blocking call and is still refused while armed.
+- Sector erases in `nonblockingLogging()` (~30-50ms) are still over budget — still a known defect, lower priority than before.
 
 ## Reception-preserving (non-preemptive) slot scheduler
 
