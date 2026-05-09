@@ -17,7 +17,7 @@ Most of this codebase is cosmetic or tracking-only (telemetry display, logging, 
 
 ## Loop timing rule
 
-Pyro for parachute deployment is the only safety-critical loop work. It tolerates ms-scale variation. Budget:
+Pyro for parachute deployment at apogee/descent is the only safety-critical loop work. It tolerates ms-scale variation, and sensors must be read with regular cadence to decide to deploy. Budget:
 
 - **Typical loop iteration: ~1ms is fine.** No need to chase µs.
 - **Worst-case iteration: up to ~10ms is acceptable.**
