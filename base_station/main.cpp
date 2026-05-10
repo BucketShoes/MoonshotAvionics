@@ -44,11 +44,14 @@ unsigned long bootMicros = 0;
 #define TRANSPORT_USB   0x04  // reserved for future
 #define TRANSPORT_ALL   (TRANSPORT_WIFI | TRANSPORT_BLE | TRANSPORT_USB)
 
+
 #ifndef BS_WIFI_DEFAULT_ON
 #define BS_WIFI_DEFAULT_ON 0
 #endif
 bool wifiEnabled = BS_WIFI_DEFAULT_ON;
 bool bleEnabled = true;
+
+#define BLE_ADV_INTERVAL 1000 // 0.625ms units
 
 // ===================== HARDWARE =====================
 
@@ -1036,9 +1039,9 @@ void setup() {
 
   Serial.println("=== Ready ===");
 
-  NimBLEDevice::getAdvertising()->setAdvertisingInterval(1600);
+  NimBLEDevice::getAdvertising()->setAdvertisingInterval(BLE_ADV_INTERVAL);
   if (wifiEnabled) {
-    esp_wifi_set_max_tx_power(20);
+    esp_wifi_set_max_tx_power(20); //in 0.25dbm units. 
     esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
   }
   setCpuFrequencyMhz(160);

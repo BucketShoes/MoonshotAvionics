@@ -66,7 +66,9 @@ static void notifyPhone(NimBLECharacteristic* chr, PendingNotify& pn,
                         const uint8_t* data, size_t len) {
     if (!phoneConnected || !chr) return;
     size_t capped = len > sizeof(pn.buf) ? sizeof(pn.buf) : len;
-    if (!chr->notify(data, capped)) {
+    bool ok = chr->notify(data, capped);
+    if (!ok) {
+        Serial.println("[PROXY] notify dropped — holding for retry");
         memcpy(pn.buf, data, capped);
         pn.len = (uint16_t)capped;
         pn.pending = true;
@@ -84,6 +86,7 @@ static bool retryPending(NimBLECharacteristic* chr, PendingNotify& pn) {
 // ===================== ROCKET NOTIFY CALLBACKS =====================
 
 static void onRocketTelem(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
+    Serial.printf("[PROXY] telem rx %uB phone=%d\n", (unsigned)len, (int)phoneConnected);
     notifyPhone(pxTelemChar, pxTelemPending, data, len);
 }
 
@@ -338,7 +341,7 @@ void bleProxyLoop() {
             lastScanMs = now;
             scanActive = true;
             Serial.println("[PROXY] Scanning for rocket...");
-            NimBLEDevice::getScan()->start(10, false);
+            NimBLEDevice::getScan()->start(2000, false);
         }
     }
 }
