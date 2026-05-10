@@ -84,11 +84,16 @@ uint32_t highestNonce = 0;
 NimBLEServer* bleServer = nullptr;
 NimBLEAdvertising* bleAdvert = nullptr;
 NimBLECharacteristic* bleTelemChar = nullptr;
+// Connection handle of the client subscribed to bleTelemChar. 0xFFFF = none.
+// Tracked via onSubscribe so we only notify the right connection, not every
+// peer on the server (proxy phone connects too but subscribes a different char).
+static uint16_t bleTelemSubHandle = 0xFFFF;
 NimBLECharacteristic* bleCmdChar = nullptr;
 NimBLECharacteristic* bleStatusChar = nullptr;
 NimBLECharacteristic* bleLogFetchChar = nullptr;
 NimBLECharacteristic* bleOtaChar = nullptr;
 bool bleClientConnected = false;
+uint16_t bleClientConnHandle = 0xFFFF;  // conn handle of the base station service client
 
 // ===================== OTA STATE MACHINE =====================
 #define OTA_STATUS_OK            0x00
@@ -357,8 +362,8 @@ void pushToAllTransports(const uint8_t* wsBuf, size_t wsLen) {
   if (wifiEnabled) {
     ws.binaryAll(wsBuf, wsLen);
   }
-  if (bleEnabled && bleClientConnected && bleTelemChar) {
-    bleTelemChar->notify((uint8_t*)wsBuf, wsLen);
+  if (bleEnabled && bleTelemChar && bleTelemSubHandle != 0xFFFF) {
+    bleTelemChar->notify((uint8_t*)wsBuf, wsLen, bleTelemSubHandle);
   }
 }
 
@@ -700,6 +705,18 @@ void onWsEvent(AsyncWebSocket *s, AsyncWebSocketClient *c, AwsEventType t, void 
 
 // ===================== BLE CALLBACKS =====================
 
+class BleTelemSubCallbacks : public NimBLECharacteristicCallbacks {
+  void onSubscribe(NimBLECharacteristic* chr, NimBLEConnInfo& connInfo, uint16_t subValue) override {
+    uint16_t handle = connInfo.getConnHandle();
+    if (subValue == 0) {
+      if (handle == bleTelemSubHandle) bleTelemSubHandle = 0xFFFF;
+    } else {
+      bleTelemSubHandle = handle;
+    }
+    Serial.printf("BLE telem sub handle=%u subValue=%u\n", handle, subValue);
+  }
+};
+
 class BleServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer* server, NimBLEConnInfo& connInfo) override {
     bleClientConnected = true;
@@ -709,6 +726,7 @@ class BleServerCallbacks : public NimBLEServerCallbacks {
   void onDisconnect(NimBLEServer* server, NimBLEConnInfo& connInfo, int reason) override {
     bleClientConnected = false;
     bleLogFetch.active = false;
+    if (connInfo.getConnHandle() == bleTelemSubHandle) bleTelemSubHandle = 0xFFFF;
     bleProxyOnServerDisconnect(connInfo.getConnHandle());
     Serial.print("BLE- reason:"); Serial.println(reason);
     NimBLEDevice::startAdvertising();
@@ -894,6 +912,7 @@ void initBLE() {
   NimBLEService* svc = bleServer->createService(BLE_SERVICE_UUID);
 
   bleTelemChar = svc->createCharacteristic(BLE_TELEM_CHAR_UUID, NIMBLE_PROPERTY::NOTIFY);
+  bleTelemChar->setCallbacks(new BleTelemSubCallbacks());
   bleCmdChar = svc->createCharacteristic(BLE_CMD_CHAR_UUID, NIMBLE_PROPERTY::WRITE);
   bleCmdChar->setCallbacks(new BleCmdCallbacks());
   bleStatusChar = svc->createCharacteristic(BLE_STATUS_CHAR_UUID, NIMBLE_PROPERTY::READ);
