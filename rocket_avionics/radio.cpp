@@ -12,8 +12,8 @@ static inline void ledOnRX() { ledcWrite(LED_PIN, 5); }
 static inline void ledOff()  { ledcWrite(LED_PIN, 0); }
 
 // ===================== FEM CONTROL (LoRa32 V4 only) =====================
-// The V4 has an external FEM (SKY66122-11 or similar). EN and CTL are held
-// high permanently after init; PA pin is HIGH during TX, LOW during RX.
+// The V4 has an external FEM. EN and CTL are held high permanently after init;
+// PA pin is HIGH during TX, LOW during RX. Pin assignments in board_config.h.
 #ifdef BOARD_LORA32_V4
 static inline void femInitPins() {
   pinMode(LORA_FEM_EN_PIN,  OUTPUT); digitalWrite(LORA_FEM_EN_PIN,  HIGH);
