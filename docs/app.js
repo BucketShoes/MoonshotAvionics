@@ -1628,7 +1628,8 @@ function initCharts() {
     '0x32': 'DISABLE WIFI: Stop WiFi AP. Re-enables on power cycle.',
     '0x20': 'LOG DOWNLOAD: Request records from target on download radio settings.',
     '0x40': 'PING: Request ack page. Link test.',
-    '0x41': 'SET SYNC: Establish slot clock sync point. No parameters.',
+    '0x41': 'SET SYNC: REMOVED in RadioLib rewrite (no slot machine).',
+    '0x60': 'LR LISTEN (target=base): switch base station to SF12 implicit-header RX for the given window. While listening, base does NOT receive normal telem. 0=cancel.',
     '0xF0': 'REBOOT: Software restart. Refused if armed (rocket).',
     '0xF1': 'LOG ERASE: Clear log ring buffer. Refused if armed.',
     '0x50': 'OTA BEGIN: Open firmware update session. Erases inactive OTA partition (~2s). Refused while armed or rollback pending.',
@@ -1752,8 +1753,14 @@ function initCharts() {
         buf.push(parseInt(document.getElementById('p20-pwr').value) & 0xFF);
         break;
       case 0x41:
-        // SET SYNC: no parameters
+        // SET SYNC: REMOVED. No parameters; rocket will reject.
         break;
+      case 0x60: {
+        // LR LISTEN: uint16 durationMs (LE). Target=base station device id.
+        var ms = parseInt(document.getElementById('p60-ms').value) & 0xFFFF;
+        buf.push(ms & 0xFF, (ms >> 8) & 0xFF);
+        break;
+      }
     }
     return buf;
   }

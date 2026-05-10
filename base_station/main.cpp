@@ -358,6 +358,8 @@ void pushToAllTransports(const uint8_t* wsBuf, size_t wsLen) {
 // ===================== PACKET RECEIVED CALLBACK =====================
 // Invoked from radio.cpp bsHandleRxDone() for every valid received packet.
 
+static void processBaseLoraCommand(const uint8_t* pkt, size_t pktLen);  // fwd decl
+
 void bsOnPacketReceived(const uint8_t* buf, size_t len, float snrF, float rssiF) {
   // Wire/log format only: log_store records snr in dB*4 (spec).
   int8_t snr4 = (int8_t)constrain((int)(snrF * 4.0f), -128, 127);
@@ -370,6 +372,12 @@ void bsOnPacketReceived(const uint8_t* buf, size_t len, float snrF, float rssiF)
     memcpy(latestTelem.data, buf, len);
     latestTelem.len = len; latestTelem.snr4 = snr4;
     latestTelem.timestamp = nowMs; latestTelem.valid = true;
+  }
+
+  // LoRa-received command targeted at this base station — relay-mode entry
+  // point. Verifies HMAC + nonce, then runs base-local handler.
+  if (len >= HMAC_TRUNC_LEN + 7 && buf[0] == PKT_COMMAND && buf[1] == DEVICE_ID) {
+    processBaseLoraCommand(buf, len);
   }
 
   if (len >= 5 && buf[0] == PKT_LONGRANGE) {
@@ -426,6 +434,105 @@ size_t bsBuildPingCmdPacket(uint8_t* buf) {
   return 17;
 }
 
+// ===================== LOCAL COMMAND EXECUTION =====================
+// Base-station-targeted commands (target byte == DEVICE_ID) run here.
+// Caller is responsible for HMAC + nonce verification — this function only
+// dispatches. Intended to be called from BOTH the post-TX local-apply path
+// (when the operator queues a base-targeted command via web/BLE/HTTP, the
+// HMAC is already verified by queueCommandTx) AND the LoRa-RX path (when
+// a remote operator-station relays a base-targeted command — verified by
+// processBaseLoraCommand below).
+// Returns true if the command was a base-local one and was handled.
+static bool tryExecuteLocalCommand(const uint8_t* pkt, size_t pktLen) {
+  if (pktLen < 7) return false;
+  if (pkt[1] != DEVICE_ID) return false;
+  uint8_t cmdId = pkt[2];
+
+  switch (cmdId) {
+    case CMD_OTA_BEGIN:
+      otaHandleBegin();
+      return true;
+
+    case CMD_OTA_FINALIZE: {
+      if (pktLen < 7 + 36 + HMAC_TRUNC_LEN) return false;
+      uint32_t fwSize = (uint32_t)pkt[7] | ((uint32_t)pkt[8] << 8)
+                      | ((uint32_t)pkt[9] << 16) | ((uint32_t)pkt[10] << 24);
+      const uint8_t* fwHmac = &pkt[11];
+      otaHandleFinalize(fwSize, fwHmac);
+      return true;
+    }
+
+    case CMD_OTA_CONFIRM:
+      otaHandleConfirm();
+      return true;
+
+    case 0x30: {  // SET RELAY RADIO
+      if (pktLen < 23) return false;
+      uint8_t priCh  = pkt[7];
+      uint8_t priSf  = pkt[8];
+      int8_t  priPwr = (int8_t)pkt[9];
+      uint8_t bhCh_  = pkt[10];
+      uint8_t bhSf_  = pkt[11];
+      int8_t  bhPwr_ = (int8_t)pkt[12];
+
+      float priFreq = channelToFreqMHz(priCh);
+      if (priFreq != 0.0f && priSf >= 5 && priSf <= 12 && priPwr >= -9 && priPwr <= 22) {
+        activeChannel = priCh; activeSF = priSf; activePower = priPwr;
+        bsUpdateActiveFreqBw();
+        bsNvs.putUChar("radio_ch", activeChannel);
+        bsNvs.putUChar("radio_sf", activeSF);
+        bsNvs.putChar("radio_pwr", activePower);
+      }
+      float bhFreq_ = channelToFreqMHz(bhCh_);
+      if (bhFreq_ != 0.0f && bhSf_ >= 5 && bhSf_ <= 12 && bhPwr_ >= -9 && bhPwr_ <= 22) {
+        bhChannel = bhCh_; bhSF = bhSf_; bhPower = bhPwr_;
+        bsNvs.putUChar("bh_ch", bhChannel);
+        bsNvs.putUChar("bh_sf", bhSF);
+        bsNvs.putChar("bh_pwr", bhPower);
+      }
+      bsRadioApplyConfig();
+      return true;
+    }
+
+    case CMD_LR_LISTEN: {
+      // params: uint16 durationMs, little-endian. 0 = cancel.
+      if (pktLen < 7 + 2 + HMAC_TRUNC_LEN) return false;
+      uint16_t durationMs = (uint16_t)pkt[7] | ((uint16_t)pkt[8] << 8);
+      bsRadioEnterLRListen(durationMs);
+      return true;
+    }
+
+    default:
+      return false;
+  }
+}
+
+// Verify HMAC + nonce for a LoRa-received command targeting this base, then
+// run tryExecuteLocalCommand. Used to let other base stations (or in future,
+// any HMAC-holding device) trigger base-local actions over the air.
+static void processBaseLoraCommand(const uint8_t* pkt, size_t pktLen) {
+  if (pktLen < HMAC_TRUNC_LEN + 7) return;
+  if (pkt[0] != PKT_COMMAND) return;
+  if (pkt[1] != DEVICE_ID) return;       // not for us
+  if (!verifyCommandHMAC(pkt, pktLen)) {
+    Serial.println("BS LoRa CMD: HMAC fail");
+    return;
+  }
+  uint32_t nonce = (uint32_t)pkt[3] | ((uint32_t)pkt[4] << 8)
+                 | ((uint32_t)pkt[5] << 16) | ((uint32_t)pkt[6] << 24);
+  if (nonce <= highestNonce) {
+    Serial.println("BS LoRa CMD: stale nonce");
+    return;
+  }
+  highestNonce = nonce;
+  bsNvs.putUInt("nonce", highestNonce);
+  Serial.print("BS LoRa CMD: 0x"); Serial.print(pkt[2], HEX);
+  Serial.print(" nonce="); Serial.println(nonce);
+  if (!tryExecuteLocalCommand(pkt, pktLen)) {
+    Serial.println("BS LoRa CMD: not a base-local command");
+  }
+}
+
 // ===================== CMD TX DISPATCH =====================
 // First send waits for the post-RxDone window (cleanest air just opened) or
 // for `waitMs` since queueing to elapse, whichever comes first. Subsequent
@@ -478,49 +585,9 @@ static void dispatchCmdTx() {
     Serial.print("CMD TX complete: "); Serial.print(cmdTx.sends); Serial.println(" sent");
     if (logStoreOk) logStore.writeRecord(cmdTx.pkt, cmdTx.pktLen, 0x7F, millis());
 
-    // OTA commands (0x50/0x51/0x52) targeted at this base station — apply locally
-    if (cmdTx.pkt[1] == DEVICE_ID &&
-        (cmdTx.pkt[2] == CMD_OTA_BEGIN || cmdTx.pkt[2] == CMD_OTA_FINALIZE || cmdTx.pkt[2] == CMD_OTA_CONFIRM)) {
-      if (cmdTx.pkt[2] == CMD_OTA_BEGIN) {
-        otaHandleBegin();
-      } else if (cmdTx.pkt[2] == CMD_OTA_FINALIZE && cmdTx.pktLen >= 7 + 36 + HMAC_TRUNC_LEN) {
-        uint32_t fwSize = (uint32_t)cmdTx.pkt[7] | ((uint32_t)cmdTx.pkt[8] << 8)
-                        | ((uint32_t)cmdTx.pkt[9] << 16) | ((uint32_t)cmdTx.pkt[10] << 24);
-        const uint8_t* fwHmac = &cmdTx.pkt[11];
-        otaHandleFinalize(fwSize, fwHmac);
-      } else if (cmdTx.pkt[2] == CMD_OTA_CONFIRM) {
-        otaHandleConfirm();
-      }
-      return;
-    }
-
-    // SET RELAY RADIO (0x30) targeted at us — apply locally
-    if (cmdTx.pktLen >= 23 && cmdTx.pkt[1] == DEVICE_ID && cmdTx.pkt[2] == 0x30) {
-      uint8_t priCh  = cmdTx.pkt[7];
-      uint8_t priSf  = cmdTx.pkt[8];
-      int8_t  priPwr = (int8_t)cmdTx.pkt[9];
-      uint8_t bhCh_  = cmdTx.pkt[10];
-      uint8_t bhSf_  = cmdTx.pkt[11];
-      int8_t  bhPwr_ = (int8_t)cmdTx.pkt[12];
-
-      float priFreq = channelToFreqMHz(priCh);
-      if (priFreq != 0.0f && priSf >= 5 && priSf <= 12 && priPwr >= -9 && priPwr <= 22) {
-        activeChannel = priCh; activeSF = priSf; activePower = priPwr;
-        bsUpdateActiveFreqBw();
-        bsNvs.putUChar("radio_ch", activeChannel);
-        bsNvs.putUChar("radio_sf", activeSF);
-        bsNvs.putChar("radio_pwr", activePower);
-      }
-      float bhFreq_ = channelToFreqMHz(bhCh_);
-      if (bhFreq_ != 0.0f && bhSf_ >= 5 && bhSf_ <= 12 && bhPwr_ >= -9 && bhPwr_ <= 22) {
-        bhChannel = bhCh_; bhSF = bhSf_; bhPower = bhPwr_;
-        bsNvs.putUChar("bh_ch", bhChannel);
-        bsNvs.putUChar("bh_sf", bhSF);
-        bsNvs.putChar("bh_pwr", bhPower);
-      }
-      bsRadioApplyConfig();
-      return;
-    }
+    // Base-targeted command (queued via web/BLE/HTTP, HMAC already verified
+    // in queueCommandTx). Run any local effect after the on-air relay.
+    tryExecuteLocalCommand(cmdTx.pkt, cmdTx.pktLen);
   }
 }
 

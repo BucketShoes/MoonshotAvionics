@@ -390,16 +390,18 @@ void nonblockingRadio() {
     Serial.println("radio: TX overrun, forcing through busy RX");
   }
 
-  // Every Nth telem cycle, send an LR beacon instead of normal telem.
-  // The LR TX is blocking on SF12 airtime (~1.3s for 3 bytes BW125) and
-  // mid-flight loop-stall implications are noted in radio.h.
-  static uint32_t telemCycleCount = 0;
-  if ((telemCycleCount % LR_BEACON_EVERY_N_TELEM) == (LR_BEACON_EVERY_N_TELEM - 1)) {
+  // Time-based LR beacon: at least LR_BEACON_INTERVAL_MS between LR packets,
+  // independent of telem rate. Replaces the normal telem for this slot.
+  // Counts as delayed_tx if it can't fire (treated as a deferred normal telem).
+  static unsigned long lastLRMs = 0;
+  if (lrBeaconEnabled && (millis() - lastLRMs) >= LR_BEACON_INTERVAL_MS) {
     uint8_t lrPayload[LORA_LR_IMPLICIT_LEN];
     buildLRPayload(lrPayload);
-    if (radioTxLRBeacon(lrPayload)) {
+    if (radioStartLRTransmit(lrPayload)) {
+      lastLRMs    = millis();
       nextTelemUs = micros() + txIntervalUs;
-      telemCycleCount++;
+    } else {
+      delayedTxCount++;
     }
     return;
   }
@@ -409,7 +411,6 @@ void nonblockingRadio() {
   if (len == 0) return;
   if (radioStartTransmit(pkt, len, /*forceThroughBusy=*/overrun)) {
     nextTelemUs = now + txIntervalUs;
-    telemCycleCount++;
   }
 }
 

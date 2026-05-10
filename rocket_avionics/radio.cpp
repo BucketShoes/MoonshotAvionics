@@ -29,6 +29,7 @@ uint32_t txFailCount    = 0;
 uint32_t rxFailCount    = 0;
 uint16_t delayedTxCount = 0;
 uint16_t invalidRxCount = 0;
+bool     lrBeaconEnabled = false;
 int64_t  lastValidCmdUs = 0;
 
 // ===================== RADIOLIB MODULE =====================
@@ -115,7 +116,9 @@ bool radioRxBusy() {
 // ===================== TX =====================
 
 static unsigned long txStartedMs = 0;
-#define RADIO_TX_WATCHDOG_MS  1500   // longer than any sane airtime; recovers wedged TX
+// Watchdog: longest possible airtime is LR (SF12 implicit 3 bytes ≈ 660ms);
+// give 2x headroom. Normal-mod TX is much faster but we use one bound for both.
+#define RADIO_TX_WATCHDOG_MS  1500
 
 bool radioStartTransmit(const uint8_t* pkt, size_t len, bool forceThroughBusy) {
   if (!loraReady) return false;
@@ -145,37 +148,37 @@ bool radioStartTransmit(const uint8_t* pkt, size_t len, bool forceThroughBusy) {
 }
 
 // ===================== LR (LONG-RANGE) BEACON =====================
-// One-shot SF12 implicit-header transmit, then revert to normal telem
-// modulation and re-arm RX. Blocking on SF12 airtime — see radio.h note.
+// Non-blocking SF12 implicit-header transmit. State machine:
+//   start: standby → switch to LR mod → startTransmit → state=RADIO_TX_LR
+//   poll on TxDone: switch back to normal mod → startReceive → state=RADIO_RX
+// LR airtime (~660ms) is way over the loop budget, so it MUST be async.
+// Caller (scheduler) gates frequency and disable.
 
-bool radioTxLRBeacon(const uint8_t* payload3) {
+bool radioStartLRTransmit(const uint8_t* payload3) {
   if (!loraReady) return false;
-  if (radioState == RADIO_TX) return false;
-  if (radioRxBusy()) return false;
+  if (radioState != RADIO_RX) return false;     // mid-TX or off
+  if (radioRxBusy()) return false;              // packet currently arriving
 
   radio.standby();
-
-  // Switch to LR modulation. Channel/BW/CR/preamble unchanged.
   radio.setSpreadingFactor(LORA_LR_SF);
-  // RadioLib uses implicit header when payloadLen is set on a fixed-len modem.
-  // The simplest path: implicitHeader(len) sets implicit + fixed length.
   radio.implicitHeader(LORA_LR_IMPLICIT_LEN);
 
-  // Blocking transmit — at SF12/BW125, 3 bytes is ~1.3s airtime.
-  int st = radio.transmit((uint8_t*)payload3, LORA_LR_IMPLICIT_LEN);
-
-  // Restore normal telem modulation regardless of TX result.
-  radio.setSpreadingFactor(activeSF);
-  radio.explicitHeader();
-
   dio1Flag = false;
-  int st2 = radio.startReceive();
-  if (st2 == RADIOLIB_ERR_NONE) { radioState = RADIO_RX; ledOnRX(); }
-  else                          { radioState = RADIO_OFF; ledOff(); }
-
-  if (st == RADIOLIB_ERR_NONE) { txCount++; return true; }
-  txFailCount++;
-  return false;
+  int st = radio.startTransmit((uint8_t*)payload3, LORA_LR_IMPLICIT_LEN);
+  if (st != RADIOLIB_ERR_NONE) {
+    txFailCount++;
+    // Restore normal mod and RX before returning.
+    radio.setSpreadingFactor(activeSF);
+    radio.explicitHeader();
+    radio.startReceive();
+    radioState = RADIO_RX;
+    ledOnRX();
+    return false;
+  }
+  radioState  = RADIO_TX_LR;
+  txStartedMs = millis();
+  ledOnTX();
+  return true;
 }
 
 // ===================== POLL =====================
@@ -183,11 +186,17 @@ bool radioTxLRBeacon(const uint8_t* payload3) {
 void radioPoll() {
   if (!loraReady) return;
 
-  // TX watchdog — recover from missed TxDone IRQ (wedged radio).
-  if (radioState == RADIO_TX && (millis() - txStartedMs) > RADIO_TX_WATCHDOG_MS) {
+  // TX watchdog — recover from missed TxDone IRQ (wedged radio). Covers both
+  // normal-mod TX and LR TX. On LR-mode wedge we also restore normal mod.
+  if ((radioState == RADIO_TX || radioState == RADIO_TX_LR) &&
+      (millis() - txStartedMs) > RADIO_TX_WATCHDOG_MS) {
     Serial.println("radio: TX watchdog fired — forcing standby+RX");
     txFailCount++;
     radio.standby();
+    if (radioState == RADIO_TX_LR) {
+      radio.setSpreadingFactor(activeSF);
+      radio.explicitHeader();
+    }
     dio1Flag = false;
     int st = radio.startReceive();
     if (st == RADIOLIB_ERR_NONE) { radioState = RADIO_RX; ledOnRX(); }
@@ -198,9 +207,14 @@ void radioPoll() {
   if (!dio1Flag) return;
   dio1Flag = false;
 
-  if (radioState == RADIO_TX) {
+  if (radioState == RADIO_TX || radioState == RADIO_TX_LR) {
+    bool wasLR = (radioState == RADIO_TX_LR);
     radio.finishTransmit();
     txCount++;
+    if (wasLR) {
+      radio.setSpreadingFactor(activeSF);
+      radio.explicitHeader();
+    }
     int st = radio.startReceive();
     if (st == RADIOLIB_ERR_NONE) { radioState = RADIO_RX; ledOnRX(); }
     else                         { radioState = RADIO_OFF; ledOff(); }

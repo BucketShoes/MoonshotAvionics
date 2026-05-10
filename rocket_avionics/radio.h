@@ -16,7 +16,9 @@
 enum RadioState {
   RADIO_OFF,         // not yet initialised
   RADIO_RX,          // listening (default)
-  RADIO_TX,          // transmit in flight, waiting for TxDone IRQ
+  RADIO_TX,          // normal-modulation transmit in flight, waiting for TxDone IRQ
+  RADIO_TX_LR,       // LR (SF12 implicit-header) transmit in flight; on TxDone we
+                     // also restore normal modulation before re-arming RX
 };
 
 // ===================== HARDWARE OBJECTS =====================
@@ -47,11 +49,19 @@ extern uint32_t rxFailCount;
 
 // Spec page 0x0C counters (kept across the rewrite — still meaningful):
 //  - delayedTxCount: telem TX scheduler tick that found RX busy and deferred.
+//                    Also bumped when an LR-beacon TX would have fired but
+//                    couldn't (LR is just a delayed telem from this counter's
+//                    POV).
 //  - invalidRxCount: received packets that failed wire validation
 //                    (wrong type, wrong device ID, bad CRC, length out of range).
 //                    Does NOT include HMAC failures — those go in cmd-ack page.
 extern uint16_t delayedTxCount;
 extern uint16_t invalidRxCount;
+
+// Set false to suppress LR beacons entirely (some past mod-switch issues with
+// the raw driver — leave on by default to test whether RadioLib handles it
+// cleanly; flip off if it destabilises normal telem).
+extern bool     lrBeaconEnabled;
 
 extern int64_t  lastValidCmdUs;     // esp_timer_get_time() of last accepted command
 
@@ -90,16 +100,13 @@ bool radioStartTransmit(const uint8_t* pkt, size_t len, bool forceThroughBusy = 
 // — i.e. a TX would clobber an in-flight reception. Cheap (~50µs SPI read).
 bool radioRxBusy();
 
-// Transmit one LR (long-range, SF12, implicit header, 3-byte) packet, then
-// restore normal telem modulation and re-arm RX. Caller is responsible for
-// gating frequency (e.g. every Nth telem cycle). Returns true on success.
-// Blocking: the actual SF12 airtime (~1.5s for 3 bytes at SF12/BW125). Only
-// call when armed-loop timing is permissive — i.e. not while armed for active
-// control. For motor-eject parachute deploy at apogee, ms-scale stalls are OK
-// but a full second is not, so this should be conditioned on !isArmed by
-// the caller if needed. Currently called from the rocket TX scheduler which
-// runs unconditionally; consider this a latent constraint.
-bool radioTxLRBeacon(const uint8_t* payload3);
+// Kick off one LR (long-range, SF12, implicit header, 3-byte) transmit
+// non-blocking. Returns true if TX started; state becomes RADIO_TX_LR and
+// radioPoll() restores normal modulation + re-arms RX on TxDone IRQ.
+// Returns false if the radio was busy or the SPI command failed.
+// LR airtime is ~660 ms at SF12/BW125/CR4-5/no-CRC/3 bytes — must NOT block
+// the main loop, hence the same start+IRQ pattern as normal TX.
+bool radioStartLRTransmit(const uint8_t* payload3);
 
 // Pump the radio state machine: read RX packets, handle TxDone, restart RX.
 // Call every loop iteration. Worst-case ~1 ms (SPI read of one packet).

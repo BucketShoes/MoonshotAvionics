@@ -100,18 +100,25 @@ Commands for any device type (rockets and bases/relays both handle):
       bases/relays immediately send this packet on backhaul verbatim (since it has this relay as the target, others will ignore it, and also the nonce will be invalid next time so even mis-numbered id's will stop and cannot storm)
       Mainly for link testing.
 
-0x41  SET SYNC - DEPRECATED - no longer used.
-      Params: none
-      Source: base station (self-originates; not sent from JS in normal operation)
-      Effect: (DEPRECATED) establishes the slot clock sync point on both sides.
-        - The RxDone moment on the rocket (end of this packet's reception) is the rocket's sync anchor.
-        - The TxDone moment on the base station (hardware-captured via MCPWM DIO1 edge) is the base's anchor.
-        - Both sides set their slot index to 1
-        - Base station auto-sends this 2s after boot and a few times with phase walk
-        - JS or BLE can also trigger a resync at any time.
-        - frequency/SF/timing parameters may be added as params when frequency hopping is implemented.
-        - TODO: for relays alternate base stations that hear this should also switch to tracking the rocket with the new expected anchor (although, dont assume the rocket will hear it, hold the old anchor until confirmed)
-        - This could be used for active sync, by sending a command and reset timing on both; or passive sync to re-enter scan mode to listen on base
+0x41  SET SYNC - REMOVED.
+      Removed in the RadioLib rewrite (no slot machine, no passive sync).
+      Command ID is reserved; devices will return CMD_ERR_UNKNOWN if received.
+
+0x60  LR LISTEN  (target: base station / relay)
+      Params: uint16 durationMs (little-endian). 0 = cancel any active LR-listen window.
+      Effect: switches the base station addressed by the target byte into LR
+        (SF12, implicit-header, 3-byte payload) RX mode for the given window,
+        then auto-reverts to normal telem modulation. While in LR-listen the
+        base does NOT receive normal telem — used to recover the rocket if the
+        normal-modulation link is lost.
+      Authentication: HMAC + monotonic nonce (same path as every other command).
+        Untrusted transports (HTTP, BLE without pairing) are NOT acceptable for
+        triggering this — must be HMAC'd because turning off normal RX is a
+        denial-of-service vector. The base station accepts this command from
+        any transport (HTTP/BLE/LoRa) provided HMAC + nonce verify and the
+        target byte equals its DEVICE_ID.
+      Source: operator (via JS web UI / BLE command char / another base station
+        relaying over LoRa).
 
 0xF0  REBOOT
       Params: none

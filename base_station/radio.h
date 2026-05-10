@@ -69,6 +69,16 @@ bool bsRadioStartTx(const uint8_t* pkt, size_t len, bool forceThroughBusy = fals
 // True if radio currently has preamble/header sync on an incoming packet.
 bool bsRadioRxBusy();
 
+// Switch to LR (SF12, implicit-header, 3-byte) listen mode for `durationMs`
+// milliseconds. Auto-reverts to normal telem modulation after the window
+// expires (handled in bsRadioPoll()). Used to recover the rocket if normal
+// telem is lost — operator triggers this manually. durationMs == 0 cancels
+// any active LR listen window.
+void bsRadioEnterLRListen(uint32_t durationMs);
+
+// True iff currently in the LR-listen window.
+bool bsRadioInLRListen();
+
 // Pump the radio: handle RxDone / TxDone IRQs, restart RX. Call every loop.
 void bsRadioPoll();
 

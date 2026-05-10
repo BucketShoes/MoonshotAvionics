@@ -52,9 +52,12 @@
 // to make a 5-byte logical packet so the rest of the pipeline treats it
 // uniformly. No sync — sender just briefly switches modulation, sends, and
 // reverts. Base ignores LR unless put into "LR listen" mode.
+//
+// Time-based scheduling (not "every Nth telem") so high-rate test sessions
+// don't accidentally pack back-to-back SF12 packets.
 #define LORA_LR_SF              12
-#define LORA_LR_IMPLICIT_LEN    3       // bytes on air
-#define LR_BEACON_EVERY_N_TELEM 10      // 1 LR packet per N normal telem packets
+#define LORA_LR_IMPLICIT_LEN    3        // bytes on air
+#define LR_BEACON_INTERVAL_MS   20'000UL // ≥ this between LR beacons (replaces every-N-packets)
 
 // ===================== DEVICE IDs =====================
 
@@ -71,6 +74,10 @@
 #define CMD_OTA_FINALIZE  0x51
 #define CMD_OTA_CONFIRM   0x52
 #define CMD_PING          0x40
+#define CMD_LR_LISTEN     0x60   // Base-station-targeted: enter LR (SF12) listen mode
+                                 // params: uint16 durationMs (0 = cancel). Authenticates
+                                 // via the normal HMAC+nonce path; runs locally on the
+                                 // base whose DEVICE_ID matches the packet target.
 #define CMD_REBOOT        0xF0
 #define CMD_LOG_ERASE     0xF1
 
