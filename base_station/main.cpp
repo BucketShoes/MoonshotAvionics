@@ -12,6 +12,7 @@
 #include "log_store.h"
 #include "esp_wifi.h"
 #include "radio.h"
+#include "ble_proxy.h"
 //#include "tagged_serial.h"  // Serial wrapper that prefixes boot-relative micros
 
 #define VEXT_CTRL_PIN 3
@@ -696,12 +697,13 @@ void onWsEvent(AsyncWebSocket *s, AsyncWebSocketClient *c, AwsEventType t, void 
 class BleServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer* server, NimBLEConnInfo& connInfo) override {
     bleClientConnected = true;
+    bleProxyOnServerConnect(connInfo.getConnHandle());
     Serial.print("BLE+ addr:"); Serial.println(connInfo.getAddress().toString().c_str());
-    //TODO: @@@ force 2m phy
   }
   void onDisconnect(NimBLEServer* server, NimBLEConnInfo& connInfo, int reason) override {
     bleClientConnected = false;
     bleLogFetch.active = false;
+    bleProxyOnServerDisconnect(connInfo.getConnHandle());
     Serial.print("BLE- reason:"); Serial.println(reason);
     NimBLEDevice::startAdvertising();
   }
@@ -877,7 +879,7 @@ void handleBleLogFetch() {
 
 void initBLE() {
   NimBLEDevice::init(WIFI_SSID);
-  NimBLEDevice::setPower(ESP_PWR_LVL_P3);  // +3 dBm — pocket range is plenty
+  NimBLEDevice::setPower(ESP_PWR_LVL_P9);  // +9 dBm — max for ESP-to-ESP range test
   NimBLEDevice::setMTU(517);
 
   bleServer = NimBLEDevice::createServer();
@@ -900,13 +902,10 @@ void initBLE() {
 
   svc->start();
 
+  // Advertising is owned by bleProxyInit() — it sets name, UUIDs, and starts it.
+  // The base station service is still connectable; it just won't be in the advert
+  // packet while the proxy is active.
   bleAdvert = NimBLEDevice::getAdvertising();
-  bleAdvert->addServiceUUID(BLE_SERVICE_UUID);
-  bleAdvert->setName("NimBLE");
-  bleAdvert->enableScanResponse(true);
-  bleAdvert->setMinInterval(0x20);
-  bleAdvert->setMaxInterval(0x40);
-  bleAdvert->start();
 
   Serial.println("BLE GATT started");
 }
@@ -935,6 +934,7 @@ void setup() {
   Serial.println("\n=== Rocket Base Station ===");
 
   initBLE();
+  bleProxyInit();
 
   ledcAttach(LED_PIN, 1000, 11);
   ledcWrite(LED_PIN, 50);
@@ -1047,6 +1047,7 @@ void loop() {
   }
 
   handleBleLogFetch();
+  bleProxyLoop();
 
   // OTA notify drain
   if (bsOta.notifyPending && bleOtaChar && bleClientConnected) {
