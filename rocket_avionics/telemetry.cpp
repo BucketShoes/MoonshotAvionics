@@ -500,6 +500,7 @@ static uint16_t encodeLRFrac(double degrees, bool valid) {
 }
 
 void buildLRPayload(uint8_t buf[LORA_LR_IMPLICIT_LEN]) {
+//TODO: @@@this should be a probability dither, not hard rounded
   uint16_t latFrac = encodeLRFrac(gps.lat, gps.valid);
   uint16_t lonFrac = encodeLRFrac(gps.lon, gps.valid);
   uint32_t lowBatt = (batteryMv > 0 && batteryMv <= 3400) ? 1 : 0;

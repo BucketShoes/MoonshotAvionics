@@ -249,8 +249,8 @@ void bsRadioPoll() {
       // LR packet: 3 bytes on air with implicit header. Prepend type+devid
       // so the rest of the pipeline sees a 5-byte normal packet.
       uint8_t lrFrame[2 + LORA_LR_IMPLICIT_LEN];
-      lrFrame[0] = PKT_LONGRANGE;
-      lrFrame[1] = ROCKET_DEVICE_ID;
+      lrFrame[0] = PKT_LONGRANGE; //only lr packets go over this framing, so assume its an long-range opacket payload
+      lrFrame[1] = FAVORITE_ROCKET_DEVICE_ID;//assume its from the main rocket.  we might have proper tracking later
       memcpy(lrFrame + 2, buf, (len < LORA_LR_IMPLICIT_LEN) ? len : LORA_LR_IMPLICIT_LEN);
       bsOnPacketReceived(lrFrame, 2 + LORA_LR_IMPLICIT_LEN, snr, rssi);
     } else {

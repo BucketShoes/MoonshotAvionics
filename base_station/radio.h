@@ -23,7 +23,7 @@
 
 // ===================== BASE-LOCAL =====================
 
-#define FAVORITE_ROCKET_DEVICE_ID  ROCKET_DEVICE_ID
+#define FAVORITE_ROCKET_DEVICE_ID  0x92 //ROCKET_DEVICE_ID
 
 // ===================== RADIO STATE =====================
 
