@@ -207,10 +207,8 @@ void nonblockingInit() {
         activePower = DEFAULT_POWER;
       }
       updateActiveFreqBw();
-      // Re-apply config with NVS values if radio is ready (radioInit already called).
-      // BLOCKING — only reached during init state machine before loop() is armed.
       if (loraReady) {
-        radioApplyConfig_BLOCKING();
+        radioApplyConfig();
       }
       Serial.print("Radio config: ch"); Serial.print(activeChannel);
       Serial.print(" "); Serial.print(activeFreqMHz, 1); Serial.print("MHz SF");
@@ -224,11 +222,11 @@ void nonblockingInit() {
       Serial.print("TX rate: "); Serial.print(activeTxRate);
       Serial.print(" -> "); Serial.print(txIntervalUs); Serial.println("us interval");
 
-      // Enable radio — slot machine starts on next nonblockingRadio() call.
       txSendingEnabled = true;
       if (loraReady) {
         ledcWrite(LED_PIN, 64);
-        Serial.println("Radio enabled — slot machine starting");
+        radioApplyConfig();   // push NVS-loaded config to chip and re-arm RX
+        Serial.println("Radio enabled");
       } else {
         Serial.println("Radio FAILED — no LoRa");
       }
@@ -346,6 +344,31 @@ void nonblockingPeakTracking() {
   logPages[LOGI_SYS_HEALTH].freshMask |= 0xFF;
 }
 
+// ===================== TELEMETRY TX SCHEDULER =====================
+// Pumps the radio (RX/TxDone IRQ handling) and sends a telemetry packet on
+// the configured cadence. Replaces the old slot machine.
+
+static unsigned long nextTelemUs = 0;
+
+void nonblockingTelemTx() {
+  radioPoll();
+  if (!loraReady || !txSendingEnabled) return;
+  if (txIntervalUs == 0) return;            // disabled (rate==0)
+
+  unsigned long now = micros();
+  if ((long)(now - nextTelemUs) < 0) return;
+
+  // Don't try to start TX if RX is not idle (mid-receive). Re-check next loop.
+  if (radioState != RADIO_RX) return;
+
+  uint8_t pkt[256];
+  size_t len = buildTelemetryPacket(pkt);
+  if (len == 0) return;
+  if (radioStartTransmit(pkt, len)) {
+    nextTelemUs = now + txIntervalUs;
+  }
+}
+
 // ===================== LOOP STATS =====================
 
 unsigned long loopCount       = 0;
@@ -361,18 +384,16 @@ void nonblockingLoopStats() {
 
     Serial.print("Loop: "); Serial.print((int)((1/hz)*1'000'000)); Serial.print("us (");
     Serial.print((int)hz); Serial.print(" Hz)  Batt: "); Serial.print(batteryMv);
-    bool inSync = (lastValidCmdUs != 0 && (esp_timer_get_time() - lastValidCmdUs) < (int64_t)ROCKET_NO_BASE_HEARD_THRESHOLD_US);
-    Serial.print("mV  Sync:"); Serial.print(inSync ? "YES" : "NO");
-    Serial.print("  DelayedTX: "); Serial.print(delayedTxCount);
-    Serial.print("  InvalidRX: "); Serial.print(invalidRxCount);
+    Serial.print("mV  Sync:"); Serial.print(radioInSync() ? "YES" : "NO");
+    Serial.print("  TX: "); Serial.print(txCount);
+    Serial.print("  RX: "); Serial.print(rxCount);
+    Serial.print("  TXfail: "); Serial.print(txFailCount);
+    Serial.print("  RXfail: "); Serial.print(rxFailCount);
     Serial.print("  recentMaxLoopUs: "); Serial.print(recentMaxLoopUs);
     Serial.print("  runningMaxLoopUs: "); Serial.print(runningMaxLoopUs);
     Serial.print("  bleCbTotal: "); Serial.print(bleCallbackTotalUs);
     Serial.print("us  bleCbPeak: "); Serial.print(bleCallbackPeakUs);
-    Serial.print("us  dio1ISR="); Serial.print(dio1IsrCount);
-    Serial.print(" radioState="); Serial.print(radioState);
-    Serial.print(" dio1Pin="); Serial.print(digitalRead(LORA_DIO1_PIN));
-    Serial.print(" busyPin="); Serial.println(digitalRead(LORA_BUSY_PIN));
+    Serial.print("us  radioState="); Serial.println(radioState);
 
     if (recentMaxLoopUs > runningMaxLoopUs) runningMaxLoopUs = recentMaxLoopUs;
     recentMaxLoopUs = 0;
@@ -493,7 +514,7 @@ void loop() {
   nonblockingLogging();
   t1 = micros(); slotUs[SLOT_LOGGING] = t1 - t0; t0 = t1;
 
-  nonblockingRadio();
+  nonblockingTelemTx();
   t1 = micros(); slotUs[SLOT_RADIO] = t1 - t0; t0 = t1;
 
   nonblockingBle();

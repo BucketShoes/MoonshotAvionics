@@ -255,7 +255,6 @@ struct BleLogFetch {
 } bleLogFetch = {false, 0, 0, 0, {}, {}, 0, false, 0, 0, 0};
 
 // Forward declaration — defined below, used in dispatchCmdTx
-static bool BlockingReadyWait();
 
 // ===================== TRANSPORT-AGNOSTIC COMMAND TX =====================
 
@@ -349,9 +348,7 @@ void pushToAllTransports(const uint8_t* wsBuf, size_t wsLen) {
 // ===================== PACKET RECEIVED CALLBACK =====================
 // Invoked from radio.cpp bsHandleRxDone() for every valid received packet.
 
-void bsOnPacketReceived(const uint8_t* buf, size_t len, float snrF, float rssiF,
-                        int64_t slotIndex, uint8_t seqIdx, uint8_t win,
-                        uint32_t timeOnAirMs, float driftEmaUs) {
+void bsOnPacketReceived(const uint8_t* buf, size_t len, float snrF, float rssiF) {
   int8_t snr4 = (int8_t)(snrF * 4);
   uint32_t nowMs = millis();
 
@@ -364,17 +361,6 @@ void bsOnPacketReceived(const uint8_t* buf, size_t len, float snrF, float rssiF,
     latestTelem.timestamp = nowMs; latestTelem.valid = true;
   }
 
-  if (len >= 5 && buf[0] == PKT_LONGRANGE) {
-    uint32_t word   = (uint32_t)buf[2] | ((uint32_t)buf[3] << 8) | ((uint32_t)buf[4] << 16);
-    uint16_t latFrac = (uint16_t)(word & 0x7FF);
-    uint16_t lonFrac = (uint16_t)((word >> 11) & 0x7FF);
-    bool     lowBatt = (word >> 22) & 1;
-    bool     gpsErr  = (latFrac >= 2000 || lonFrac >= 2000);
-    Serial.print("LR packet: lat="); Serial.print(gpsErr ? -1 : (int)latFrac);
-    Serial.print(" lon="); Serial.print(gpsErr ? -1 : (int)lonFrac);
-    Serial.print(" lowbatt="); Serial.println(lowBatt ? "YES" : "NO");
-  }
-
   uint8_t wsBuf[268];
   memcpy(wsBuf, &snrF, 4);
   memcpy(wsBuf + 4, &rssiF, 4);
@@ -382,44 +368,11 @@ void bsOnPacketReceived(const uint8_t* buf, size_t len, float snrF, float rssiF,
   memcpy(wsBuf + 12, buf, len);
   pushToAllTransports(wsBuf, 12 + len);
 
-  Serial.printf("BS OnPackRx: Sig:%.1f/%.0f #%d slot:%lu seq:%u win:%u toa:%lums drift:%.1fms %dB: [",
-                snrF, rssiF, recNum, (unsigned long)slotIndex, seqIdx, win, (unsigned long)timeOnAirMs,
-                driftEmaUs / 1000.0f, (int)len);
+  Serial.printf("BS RX: Sig:%.1f/%.0f #%d %dB: [", snrF, rssiF, recNum, (int)len);
   size_t hexLen = (len < 14) ? len : 14;
-  for (size_t i = 0; i < hexLen; i++) {
-    Serial.printf("%02X", buf[i]);
-  }
+  for (size_t i = 0; i < hexLen; i++) Serial.printf("%02X", buf[i]);
   if (hexLen < len) Serial.print("...");
   Serial.println("]");
-}
-
-// ===================== SYNC PACKET BUILDER =====================
-// Builds a CMD_SET_SYNC (0x41) command packet signed with HMAC.
-// Returns packet length (always 17).
-
-size_t bsBuildSyncCmdPacket(uint8_t* buf) {
-  highestNonce++;
-  bsNvs.putUInt("nonce", highestNonce);
-
-  buf[0] = 0x9A;               // PKT_COMMAND
-  buf[1] = FAVORITE_ROCKET_DEVICE_ID;
-  buf[2] = 0x41;               // CMD_SET_SYNC
-  buf[3] = (uint8_t)(highestNonce);
-  buf[4] = (uint8_t)(highestNonce >> 8);
-  buf[5] = (uint8_t)(highestNonce >> 16);
-  buf[6] = (uint8_t)(highestNonce >> 24);
-
-  uint8_t fullHmac[32];
-  mbedtls_md_context_t ctx;
-  mbedtls_md_init(&ctx);
-  mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
-  mbedtls_md_hmac_starts(&ctx, HMAC_KEY, HMAC_KEY_LEN);
-  mbedtls_md_hmac_update(&ctx, buf, 7);
-  mbedtls_md_hmac_finish(&ctx, fullHmac);
-  mbedtls_md_free(&ctx);
-  memcpy(buf + 7, fullHmac, HMAC_TRUNC_LEN);
-
-  return 17;
 }
 
 // ===================== PING PACKET BUILDER =====================
@@ -452,45 +405,29 @@ size_t bsBuildPingCmdPacket(uint8_t* buf) {
 }
 
 // ===================== CMD TX DISPATCH =====================
-// Called from loop() when the slot machine signals WIN_CMD is ready (bsWinCmdReady)
-// or when the wait window expires (out-of-turn fallback).
+// Called from loop() once per queued command (with optional `sends` retries
+// spaced by `lastSendMs`). No slot machine — TX immediately when the radio is
+// idle, retry next loop if it isn't.
 
 static void dispatchCmdTx() {
   if (!cmdTx.active || cmdTx.sent >= cmdTx.sends) return;
-  // Stop RX if running — after standby, BUSY briefly goes high while the radio
-  // transitions. We must wait for it before the TX SPI commands.
-  // This is the base station (not rocket) and is only called when we intend to TX,
-  // so a brief spin here (~300µs max) is acceptable — it is NOT in any armed path.
-  if (bsRadioState == BS_RADIO_RX_ACTIVE) {
-    Serial.println("CMD TX: stopping RX for TX");
-    bsRadioStandby();
-    // TODO: @@@ Blocking - BUSY spin after standby, expected <300µs, bounded at 2ms
-    if (!BlockingReadyWait()) return;
-  }
-  if (bsRadioState != BS_RADIO_STANDBY) {
-    Serial.print("CMD TX: not standby (state="); Serial.print(bsRadioState); Serial.println(") — skip");
-    return;
-  }
+  if (bsRadioState != BS_RADIO_RX) return;       // radio busy, retry next loop
 
   Serial.print("CMD TX "); Serial.print(cmdTx.sent + 1);
   Serial.print("/"); Serial.print(cmdTx.sends);
   Serial.print(" len="); Serial.println(cmdTx.pktLen);
 
   if (!bsRadioStartTx(cmdTx.pkt, cmdTx.pktLen)) {
-    Serial.println("CMD TX start fail — will retry next WIN_CMD slot");
-    // Leave cmdTx.active true — packet stays queued and retries next slot.
+    Serial.println("CMD TX start fail — retry next loop");
     return;
   }
-
-  extern unsigned long bsLastCmdSentMs;
-  bsLastCmdSentMs = millis();
 
   cmdTx.sent++;
   cmdTx.lastSendMs = millis();
 
   if (cmdTx.sent >= cmdTx.sends) {
     cmdTx.active = false;
-    Serial.print("CMD TX complete: all "); Serial.print(cmdTx.sends); Serial.println(" sends dispatched, waiting TxDone");
+    Serial.print("CMD TX complete: "); Serial.print(cmdTx.sends); Serial.println(" sent");
     if (logStoreOk) logStore.writeRecord(cmdTx.pkt, cmdTx.pktLen, 0x7F, millis());
 
     // OTA commands (0x50/0x51/0x52) targeted at this base station — apply locally
@@ -533,33 +470,10 @@ static void dispatchCmdTx() {
         bsNvs.putUChar("bh_sf", bhSF);
         bsNvs.putChar("bh_pwr", bhPower);
       }
-      bsRadioStandby();
-      bsRadioApplyConfig_BLOCKING();
-      // Slot machine resumes from standby automatically on next slot boundary.
-      return;
-    }
-
-    // SET_SYNC — trigger local passive scan. Also TX'd over the air so other
-    // base stations re-scan in sync.
-    if (cmdTx.pkt[2] == CMD_SET_SYNC) {
-      Serial.println("CMD SET_SYNC: triggering passive scan");
-      bsTriggerScan();
+      bsRadioApplyConfig();
       return;
     }
   }
-}
-
-static bool BlockingReadyWait()
-{
-  // TODO: @@@ Blocking - spins on BUSY up to 2ms. Base station only, not in armed path.
-  unsigned long t0 = micros();
-  while (digitalRead(LORA_BUSY_PIN)) {
-    if (micros() - t0 > 2000) {
-      Serial.println("BS: BUSY stuck after standby (>2ms)");
-      return false;
-    }
-  }
-  return true;
 }
 
 // ===================== BUILD STATUS JSON =====================
@@ -1004,25 +918,11 @@ void loop() {
     NimBLEDevice::getAdvertising()->start(0);
   }
 
-  // ---- Radio state machine ----
+  // ---- Radio ----
   if (bsLoraReady) {
-    bsHandleRadio();
-
-    // Dispatch: slot machine signals WIN_CMD
-    if (bsWinCmdReady) {
-      bsWinCmdReady = false;
+    bsRadioPoll();
+    if (cmdTx.active && cmdTx.sent < cmdTx.sends && bsRadioState == BS_RADIO_RX) {
       dispatchCmdTx();
-    }
-
-    // Dispatch: send immediately when not synced (waitMs=0) or wait expired.
-    // Never interrupt a TX in progress — if the radio is already transmitting,
-    // wait for TxDone IRQ (handled in bsHandleRadio) before sending next.
-    if (cmdTx.active && cmdTx.sent < cmdTx.sends && bsRadioState != BS_RADIO_TX_ACTIVE) {
-      bool waitExpired = (cmdTx.waitMs == 0) || ((millis() - cmdTx.queuedMs) >= cmdTx.waitMs);
-      if (waitExpired) {
-        if (cmdTx.waitMs > 0) Serial.println("CMD TX: wait expired, sending out-of-slot");
-        dispatchCmdTx();
-      }
     }
   }
 

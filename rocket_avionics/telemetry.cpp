@@ -98,13 +98,8 @@ static int16_t clampToInt16(double val, bool valid, int16_t invalidVal) {
   return (int16_t)val;
 }
 
-// seqIdx is passed in by the caller — the slot machine computes it at TX-decision
-// time and the same value must end up in bits [12:15] of the wire packet, or the
-// base station's passive-sync anchor calc gets the wrong slot.
-// For BLE / log paths where there is no TX-decision context, pass
-// radioGetSlotIndex() % SLOT_SEQUENCE_LEN — accuracy of this field doesn't matter
-// off the air.
-static uint16_t buildStateFlags(uint8_t seqIdx) {
+// Bits [12:15] are reserved (formerly slot_seq_idx for passive sync).
+static uint16_t buildStateFlags() {
   uint16_t flags = 0;
   flags |= ((uint16_t)flightGetPhase() & 0x0F);  // [3:0] flight phase
   if (isArmed) flags |= (1 << 4);                // [4] armed
@@ -115,7 +110,6 @@ static uint16_t buildStateFlags(uint8_t seqIdx) {
   if (flightBaroOk())    flags |= (1 << 9);   // [9] baro ok
   if (flightAccelOk())   flags |= (1 << 10);  // [10] accel ok
   if (flightIsArmReady()) flags |= (1 << 11); // [11] arm ready
-  flags |= ((uint16_t)(seqIdx & 0x0F)) << 12; // [15:12] slot_seq_idx for passive sync
   return flags;
 }
 
@@ -240,17 +234,11 @@ static void buildPage0B(uint8_t* buf, size_t* pos) {
 
 // Page 0x0C: Radio health (6 bytes)
 static void buildPage0C(uint8_t* buf, size_t* pos) {
-  writeU16(buf, pos, delayedTxCount);
-  writeU16(buf, pos, invalidRxCount);
-  int8_t noiseFloor = -127;  // obsolete: bg noise floor not tracked in slotted/hop architecture
+  writeU16(buf, pos, (uint16_t)txFailCount);
+  writeU16(buf, pos, (uint16_t)rxFailCount);
+  int8_t noiseFloor = -127;
   writeU8(buf, pos, (uint8_t)noiseFloor);
-
-  // Sync status and current slot index
   uint8_t syncFlags = radioInSync() ? 0x01 : 0x00;
-  if (radioInSync()) {
-    uint8_t seqIdx = (uint8_t)(((uint64_t)radioGetSlotIndex()) % SLOT_SEQUENCE_LEN);
-    syncFlags |= (seqIdx & 0x7F) << 1;
-  }
   writeU8(buf, pos, syncFlags);
 }
 
@@ -400,9 +388,7 @@ size_t buildHeaderRecord(uint8_t* buf, size_t maxLen) {
   writeU16(buf, &pos, encodeGpsFrac(gps.lat));
   writeU16(buf, &pos, encodeGpsFrac(gps.lon));
   writeS16(buf, &pos, fusionAlt);
-  // BLE record: this field's value doesn't go on air for sync purposes.
-  uint8_t bleSeqIdx = (uint8_t)(((uint64_t)radioGetSlotIndex()) % SLOT_SEQUENCE_LEN);
-  writeU16(buf, &pos, buildStateFlags(bleSeqIdx));
+  writeU16(buf, &pos, buildStateFlags());
   return pos;  // 11
 }
 
@@ -441,7 +427,7 @@ size_t buildDataPageRecord(uint8_t pageType, uint8_t* buf, size_t maxLen) {
 
 // ===================== TELEMETRY PACKET =====================
 
-size_t buildTelemetryPacket(uint8_t* buf, uint8_t seqIdx) {
+size_t buildTelemetryPacket(uint8_t* buf) {
   // LoRa format: flat binary, no length-prefixed records.
   // Header fields written directly, followed by one data page.
   size_t pos = 0;
@@ -459,7 +445,7 @@ size_t buildTelemetryPacket(uint8_t* buf, uint8_t seqIdx) {
     fusionAlt = clampToInt16(gps.alt, true, -32768);
   }
   writeS16(buf, &pos, fusionAlt);
-  writeU16(buf, &pos, buildStateFlags(seqIdx));
+  writeU16(buf, &pos, buildStateFlags());
 
   // Choose data page: cmd ack > thrust curve force > round-robin
   uint8_t pageType;

@@ -68,7 +68,6 @@ static int expectedParamLen(uint8_t cmdId) {
     case CMD_OTA_BEGIN:     return 0;
     case CMD_OTA_FINALIZE:  return 36;  // fwSize(4) + fwHmac(32)
     case CMD_OTA_CONFIRM:   return 0;
-    case CMD_SET_SYNC:      return 0;
     case CMD_PING:          return 0;
     case CMD_REBOOT:        return 0;
     case CMD_LOG_ERASE:     return 0;
@@ -155,8 +154,8 @@ void executeCommand(uint8_t cmdId, uint32_t nonce, const uint8_t* params, size_t
       int8_t  power = (int8_t)params[2];
 
       float freq = channelToFreqMHz(ch);
-      if (freq == 0.0f)           { result = CMD_ERR_BAD_PARAMS; break; }
-      if (sf < 5 || sf > 12)      { result = CMD_ERR_BAD_PARAMS; break; }
+      if (freq == 0.0f)             { result = CMD_ERR_BAD_PARAMS; break; }
+      if (sf < 5 || sf > 12)        { result = CMD_ERR_BAD_PARAMS; break; }
       if (power < -9 || power > 22) { result = CMD_ERR_BAD_PARAMS; break; }
 
       activeChannel = ch;
@@ -168,13 +167,7 @@ void executeCommand(uint8_t cmdId, uint32_t nonce, const uint8_t* params, size_t
       nvs.putUChar("radio_sf", activeSF);
       nvs.putChar("radio_pwr", activePower);
 
-      // Apply new config. BLOCKING — radioApplyConfig_BLOCKING() calls
-      // DO_NOT_CALL_WHILE_ARMED_radioWaitBusy_WARNING_LONG_BLOCKING (up to 100ms each).
-      // Also re-derives hop sequence for new command channel.
-      // TODO: @@@ refuse CMD_SET_RADIO while armed to prevent blocking the armed loop.
-      radioStandby();
-      radioApplyConfig_BLOCKING();
-      // Slot machine will resume from standby on next nonblockingRadio() call.
+      radioApplyConfig();
 
       Serial.print("Radio set: ch"); Serial.print(ch);
       Serial.print(" "); Serial.print(activeFreqMHz, 1); Serial.print("MHz SF");
@@ -206,20 +199,6 @@ void executeCommand(uint8_t cmdId, uint32_t nonce, const uint8_t* params, size_t
 
     case CMD_OTA_CONFIRM:
       result = otaHandleConfirm();
-      break;
-
-    case CMD_SET_SYNC:
-      // Anchor the slot clock to the DIO1 timestamp of this RxDone.
-      // slotIndex=1: the sync packet is in WIN_CMD (slot index 1 in the old sequence — now
-      // CMD_SET_SYNC is being removed in favour of passive sync, but kept for compat).
-      Serial.print("SYNC: anchor="); Serial.print(dio1CaptureVal);
-      Serial.print(" slotIdx=1");
-      Serial.print(" micros="); Serial.println(micros());
-      syncAnchorUs      = (int64_t)dio1CaptureVal;
-      syncSeedSlotIndex = 1;
-      lastValidCmdUs    = esp_timer_get_time();
-      dio1Fired         = false;
-      result = CMD_OK;
       break;
 
     case CMD_PING:
@@ -267,8 +246,8 @@ void processReceivedPacket(const uint8_t* pkt, size_t pktLen, int8_t rssi, int8_
     Serial.println(")");
   }
 
-  if (pktLen < 17) { invalidRxCount++; return; }
-  if (pkt[0] != PKT_COMMAND) { invalidRxCount++; return; }
+  if (pktLen < 17) { rxFailCount++; return; }
+  if (pkt[0] != PKT_COMMAND) { rxFailCount++; return; }
 
   if (pkt[1] != DEVICE_ID) {
     Serial.print("CMD: saw other target:"); Serial.print(pkt[1]);
@@ -278,7 +257,7 @@ void processReceivedPacket(const uint8_t* pkt, size_t pktLen, int8_t rssi, int8_
 
   if (!verifyCommandHMAC(pkt, pktLen)) {
     lastAck.invalidHmacCount++;
-    invalidRxCount++;
+    rxFailCount++;
     Serial.println("CMD: HMAC fail");
     // Mark CMD ACK page fresh so BLE phone sees the updated invalidHmacCount.
     // Do NOT set lastAck.pending or overwrite lastAck.result — unsigned traffic
@@ -292,7 +271,7 @@ void processReceivedPacket(const uint8_t* pkt, size_t pktLen, int8_t rssi, int8_
 
   if (nonce <= highestNonce) {
     Serial.println("CMD: stale nonce");
-    invalidRxCount++;
+    rxFailCount++;
     return;
   }
 
@@ -301,15 +280,8 @@ void processReceivedPacket(const uint8_t* pkt, size_t pktLen, int8_t rssi, int8_
   lastValidCmdUs = esp_timer_get_time();
 
   lastAck.rssi = rssi;
-  lastAck.snr  = (int8_t)((float)snr * 4);
-
-  // Capture position in slot when command RX completed (in 2ms units, clamped to 255)
-  int64_t rxTimeUs = (int64_t)dio1TimestampUs();
-  int64_t elapsed = rxTimeUs - syncAnchorUs;
-  if (elapsed < 0) elapsed = 0;
-  uint32_t posInSlotUs = (uint32_t)(elapsed % SLOT_DURATION_US);
-  uint32_t posInSlotMs = posInSlotUs / 1000;
-  lastAck.rxPosInSlot = (posInSlotMs / 2 > 255) ? 255 : (uint8_t)(posInSlotMs / 2);
+  lastAck.snr  = snr;     // already in dB*4 units (radio.cpp scales)
+  lastAck.rxPosInSlot = 0;
 
   size_t paramsOffset = 7;
   size_t paramsLen = pktLen - paramsOffset - HMAC_TRUNC_LEN;
@@ -318,9 +290,9 @@ void processReceivedPacket(const uint8_t* pkt, size_t pktLen, int8_t rssi, int8_
   Serial.print("CMD: 0x"); Serial.print(cmdId, HEX);
   Serial.print(" nonce="); Serial.println(nonce);
 
-  // Log raw command packet to flash. SNR stored in dB*4 format (spec).
+  // Log raw command packet to flash. SNR is already in dB*4 (set by radio.cpp).
   if (logStoreOk && pktLen > 0 && pktLen <= LOG_MAX_PAYLOAD) {
-    logStore.writeRecord(pkt, (uint8_t)pktLen, (int8_t)((int)snr * 4), millis());
+    logStore.writeRecord(pkt, (uint8_t)pktLen, snr, millis());
   }
 
   executeCommand(cmdId, nonce, params, paramsLen);

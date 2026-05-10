@@ -34,13 +34,23 @@ Implications:
 - `executeLogDownload()` is the only intentionally fully-blocking call and is still refused while armed.
 - Sector erases in `nonblockingLogging()` (~30-50ms) are still over budget — still a known defect, lower priority than before.
 
-## Reception-preserving (non-preemptive) slot scheduler
+## Radio architecture
 
-The radio slot machine is **non-preemptive**: once RX is issued, only the radio's own timeout or an RxDone/CRC IRQ ends it — software never aborts in-flight reception. Slots are deliberately small relative to airtime; long packets routinely span 2–4 slots.
+The radio layer is **RadioLib (jgromes/RadioLib) on top of the SX1262**, used the
+boring/canonical way:
 
-Do **not** call `radioStandby()` / `bsRadioStandby()` from the slot-machine path "to be safe" before a new RX/TX — that aborts whatever the radio was doing and produces garbage payloads. Standby is reserved for init, wedged-recovery (N consecutive overruns), `WIN_OFF`, and explicit policy transitions. Issuing `SetRx`/`SetTx` while the chip is still in a previous action is expected; the chip rejects with non-OK status and we just count + retry next slot.
-
-The `BUSY` GPIO is "command-in-flight," not "radio-in-use" — it goes low once TX/RX starts. RX timeouts must subtract `BS_RX_TAIL_GUARD_US` so the chip's own timeout fires before the next slot's action.
+- Single fixed channel, single modulation. Channel/SF/power are NVS-backed and
+  changeable via CMD_SET_RADIO; no frequency hopping, no per-slot config.
+- Rocket: continuous RX via DIO1 IRQ (`startReceive()` + `setDio1Action()`).
+  Telemetry sends on a `millis()` cadence via `radioStartTransmit()`; on TxDone
+  IRQ the radio flips back to RX.
+- Base station: continuous RX via DIO1 IRQ. When a command is queued, TX runs;
+  on TxDone IRQ it flips back to RX.
+- No slot machine, no passive-sync state machine, no drift EMA, no hop sequence.
+  The previous design is gone — don't re-introduce it without explicit user
+  approval.
+- BLE handles the high-rate firehose to the phone/dashboard. LoRa is for range
+  and the long-link command path.
 
 ## System overview
 
@@ -61,7 +71,7 @@ design documents/        Specifications — see index below
 | `flight.h/.cpp` | Flight phase state machine, arming, pyro decisions |
 | `telemetry.h/.cpp` | Packet builders (0x01–0x0D pages), flash log writer |
 | `commands.h/.cpp` | HMAC auth, nonce replay protection, command dispatch |
-| `radio.h/.cpp` | SX1262 TX/RX state machine, CSMA, scheduling |
+| `radio.h/.cpp` | RadioLib SX1262 wrapper: continuous RX, transmit-when-due |
 | `gps.h/.cpp` | NMEA parsing, GPS state |
 | `log_store.h` | Flash ring buffer, index partition |
 | `rocket_avionics.ino` | `setup()`, `loop()`, init state machine, globals |
@@ -79,7 +89,6 @@ Pull the relevant doc into the conversation when working in that area.
 | `Packet, log, and data formats.txt` | Wire protocol, data page formats, BLE GATT services, log record layout |
 | `Lora command listing.txt` | Adding/modifying commands, HMAC/nonce handling, download protocol |
 | `Ring buffer layout and log storage format.txt` | Flash storage, index partition, boot recovery, log erase |
-| `Channel mapping.txt` | LoRa frequencies, future hopping system, GPS time sync |
 | `avionics structure.txt` | Simple vs fancy flight model distinction (pyro uses simple model only) |
 | `JS notes.txt` | Web dashboard: session rebuilding, log history loading, packet decoding |
 | `voice callouts.txt` | Voice announcement logic and abbreviated number formatting |

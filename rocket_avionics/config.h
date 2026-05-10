@@ -34,24 +34,6 @@
 #define PYRO_HV_PRESENT_MV    2750
 #define PYRO_HV_DIVIDER_RATIO 11
 
-// Debug log flags moved to common/radio_config.h (LOG_RK_*)
-#define LOG_APPLYCFG    true
-
-// ===================== SLOT CONFIG STRUCT =====================
-// Per-slot radio parameters. Currently all slots use the same config.
-
-#include "sx126x.h"
-
-struct SlotConfig {
-  uint32_t              freqHz;
-  sx126x_lora_sf_t      sf;
-  sx126x_lora_bw_t      bw;
-  sx126x_lora_cr_t      cr;
-  uint16_t              preambleSymbols;
-  sx126x_lora_pkt_len_modes_t headerType;
-  uint8_t               payloadLen;
-};
-
 // ===================== TIMING =====================
 
 #define BTN_DEBOUNCE_US        50000UL

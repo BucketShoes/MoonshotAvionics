@@ -1,28 +1,27 @@
-// radio.h — LoRa radio hardware, TX/RX state machine, and slot-clock sync.
-// Owns the SX1262 via sx126x_driver, all radio state, and slot-clock timing.
+// radio.h — RadioLib-based LoRa link for the rocket.
+// Continuous RX with DIO1 IRQ; non-blocking TX when telemetry is due.
+// No slot scheduling, no hopping, no scan/anchor logic — that lived in the
+// previous custom-driver design and has been removed.
 
 #ifndef RADIO_H
 #define RADIO_H
 
+#include <Arduino.h>
 #include <SPI.h>
-#include <esp_timer.h>     // esp_timer_get_time() — int64 µs since boot
-#include "radio_hal.h"    // sx126x_hal_context_t, dio1Fired, dio1TimestampUs()
-#include "sx126x.h"        // sx126x_driver API
-#include "config.h"        // includes ../common/radio_config.h
+#include <esp_timer.h>
+#include "config.h"
 
 // ===================== RADIO STATE =====================
 
 enum RadioState {
   RADIO_OFF,         // not yet initialised
-  RADIO_STANDBY,     // sx126x in STDBY_RC, BUSY low, ready for commands
-  RADIO_RX_ACTIVE,   // sx126x_set_rx called, waiting for DIO1
-  RADIO_TX_ACTIVE,   // sx126x_set_tx called, waiting for DIO1
+  RADIO_RX,          // listening (default)
+  RADIO_TX,          // transmit in flight, waiting for TxDone IRQ
 };
 
 // ===================== HARDWARE OBJECTS =====================
 
-extern SPIClass             loraSPI;
-extern sx126x_hal_context_t radioCtx;
+extern SPIClass loraSPI;
 
 // ===================== RADIO STATE =====================
 
@@ -30,85 +29,48 @@ extern bool       loraReady;
 extern RadioState radioState;
 
 // ===================== ACTIVE RADIO CONFIG =====================
-// Loaded from NVS at boot, updated by CMD_SET_RADIO.
+// Loaded from NVS at boot, updated by CMD_SET_RADIO. radioApplyConfig() reads
+// these globals and pushes them to the chip.
 
-extern uint8_t activeChannel;  // runtime command channel (from NVM)
+extern uint8_t activeChannel;
 extern uint8_t activeSF;
 extern int8_t  activePower;
 extern float   activeFreqMHz;
 extern float   activeBwKHz;
 
-// ===================== SLOT CLOCK STATE =====================
-// All slot-time arithmetic uses int64 microseconds (esp_timer_get_time()) so that
-// long uptimes don't overflow the slot-index multiplication, and so that
-// "is the deadline in the past?" comparisons are simple signed subtractions.
-
-extern int64_t  syncAnchorUs;
-extern int64_t  syncSeedSlotIndex;       // slot_index value at anchor time
-extern int64_t  lastValidCmdUs;          // timestamp of last received valid command
-
-// ===================== MODULATION SNAPSHOT =====================
-// Saved at the start of each RX or TX operation. Used for airtime calculations.
-// Must not be inferred from current slot type — settings can change between start and done.
-
-extern sx126x_mod_params_lora_t savedModParams;
-extern sx126x_pkt_params_lora_t savedPktParams;
-extern bool                      savedIsLR;  // true if saved params use implicit header
-
 // ===================== STATS =====================
 
-extern uint16_t delayedTxCount;
-extern uint16_t invalidRxCount;
+extern uint32_t txCount;
+extern uint32_t rxCount;
+extern uint32_t txFailCount;
+extern uint32_t rxFailCount;
+extern int64_t  lastValidCmdUs;     // esp_timer_get_time() of last accepted command
 
 // ===================== PUBLIC API =====================
 
 // Derive activeFreqMHz and activeBwKHz from activeChannel.
 void updateActiveFreqBw();
 
-// Returns true if a valid command was received within ROCKET_NO_BASE_HEARD_THRESHOLD_US.
+// True if a verified command was heard within ROCKET_NO_BASE_HEARD_THRESHOLD_US.
 inline bool radioInSync() {
   return (lastValidCmdUs != 0 &&
           (esp_timer_get_time() - lastValidCmdUs) < (int64_t)ROCKET_NO_BASE_HEARD_THRESHOLD_US);
 }
 
-// Returns current slot index (pure calculation from anchor — no stored variable).
-inline int64_t radioGetSlotIndex() {
-  return ((esp_timer_get_time() - syncAnchorUs) / (int64_t)SLOT_DURATION_US) + syncSeedSlotIndex;
-}
-
-// Initialise radio hardware.
+// Initialise SX1262 via RadioLib, attach DIO1 IRQ, and start continuous RX.
+// Returns true on success. Blocking ≤ ~50 ms; only call from setup().
 bool radioInit();
 
-// *** BLOCKING — INIT ONLY ***
-// Apply radio parameters from NVS or CMD_SET_RADIO. Radio must be in RADIO_STANDBY.
-// Contains DO_NOT_CALL_WHILE_ARMED_radioWaitBusy_WARNING_LONG_BLOCKING calls (up to 100ms each).
-void radioApplyConfig_BLOCKING();
+// Push activeChannel/SF/Power/Freq/Bw to the chip (non-blocking; sub-ms).
+// Safe to call any time the radio is not mid-TX. Re-arms RX after applying.
+void radioApplyConfig();
 
-// Start windowed RX with a timeout in raw RTC steps (15.625 µs per tick).
-// Saves modulation params for later airtime calc. isLR = true for implicit-header mode.
-// slot/seq/win/ch are the slot machine's snapshot at decision time — passed
-// through so logs reflect what was actually decided, not what radioGetSlotIndex()
-// returns after SPI work has elapsed.
-void radioStartRxTimeout(uint32_t timeoutRtcSteps,
-                         const sx126x_mod_params_lora_t& modParams,
-                         const sx126x_pkt_params_lora_t& pktParams,
-                         bool isLR,
-                         int64_t slotIndex, uint8_t seqIdx, WindowMode win, uint8_t ch);
+// Try to transmit a packet. Returns true if TX started, false if busy/error.
+// On true: state becomes RADIO_TX; radioPoll() flips back to RADIO_RX on TxDone IRQ.
+bool radioStartTransmit(const uint8_t* pkt, size_t len);
 
-// Start async TX. Returns true if TX started.
-bool radioStartTx(const uint8_t* pkt, size_t len,
-                  const sx126x_mod_params_lora_t& modParams,
-                  const sx126x_pkt_params_lora_t& pktParams,
-                  bool isLR,
-                  int64_t slotIndex, uint8_t seqIdx, WindowMode win, uint8_t ch);
-
-// Put radio in standby.
-void radioStandby();
-
-// Build the 3-byte on-air core for the 0xBB long-range packet.
-size_t buildLRPacketCore(uint8_t* buf);
-
-// Main non-blocking radio update: slot-based TX/RX scheduling.
-void nonblockingRadio();
+// Pump the radio state machine: read RX packets, handle TxDone, restart RX.
+// Call every loop iteration. Worst-case ~1 ms (SPI read of one packet).
+void radioPoll();
 
 #endif // RADIO_H
