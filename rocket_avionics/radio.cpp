@@ -37,8 +37,10 @@ static SX1262 radio = new Module(LORA_NSS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA
 // ===================== DIO1 FLAG =====================
 
 static volatile bool dio1Flag = false;
+static volatile bool dio1Time = 0;
 
-IRAM_ATTR static void onDio1() { dio1Flag = true; }
+
+IRAM_ATTR static void onDio1() { dio1Flag = true; dio1Time = esp_timer_get_time();}
 
 // ===================== HELPERS =====================
 
