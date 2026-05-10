@@ -11,6 +11,23 @@ static inline void ledOnTX() { ledcWrite(LED_PIN, 64); }
 static inline void ledOnRX() { ledcWrite(LED_PIN, 5); }
 static inline void ledOff()  { ledcWrite(LED_PIN, 0); }
 
+// ===================== FEM CONTROL (LoRa32 V4 only) =====================
+// The V4 has an external FEM (SKY66122-11 or similar). EN and CTL are held
+// high permanently after init; PA pin is HIGH during TX, LOW during RX.
+#ifdef BOARD_LORA32_V4
+static inline void femInitPins() {
+  pinMode(LORA_FEM_EN_PIN,  OUTPUT); digitalWrite(LORA_FEM_EN_PIN,  HIGH);
+  pinMode(LORA_FEM_CTL_PIN, OUTPUT); digitalWrite(LORA_FEM_CTL_PIN, HIGH);
+  pinMode(LORA_FEM_PA_PIN,  OUTPUT); digitalWrite(LORA_FEM_PA_PIN,  LOW);
+}
+static inline void femTX() { digitalWrite(LORA_FEM_PA_PIN, HIGH); }
+static inline void femRX() { digitalWrite(LORA_FEM_PA_PIN, LOW);  }
+#else
+static inline void femInitPins() {}
+static inline void femTX()      {}
+static inline void femRX()      {}
+#endif
+
 // ===================== HARDWARE / GLOBALS =====================
 
 SPIClass    loraSPI(FSPI);
@@ -54,6 +71,7 @@ void updateActiveFreqBw() {
 // ===================== INIT =====================
 
 bool radioInit() {
+  femInitPins();
   updateActiveFreqBw();
 
   int st = radio.begin(activeFreqMHz, activeBwKHz, activeSF,
@@ -75,6 +93,7 @@ bool radioInit() {
 
   loraReady  = true;
   radioState = RADIO_RX;
+  femRX();
   ledOnRX();
   return true;
 }
@@ -94,6 +113,7 @@ void radioApplyConfig() {
   radio.setSyncWord(LORA_SYNCWORD);
 
   dio1Flag = false;
+  femRX();
   int st = radio.startReceive();
   if (st == RADIOLIB_ERR_NONE) { radioState = RADIO_RX; ledOnRX(); }
   else                         { radioState = RADIO_OFF; ledOff(); }
@@ -133,9 +153,11 @@ bool radioStartTransmit(const uint8_t* pkt, size_t len, bool forceThroughBusy) {
 
   radio.standby();
   dio1Flag = false;
+  femTX();
   int st = radio.startTransmit((uint8_t*)pkt, len);
   if (st != RADIOLIB_ERR_NONE) {
     txFailCount++;
+    femRX();
     radio.startReceive();
     radioState = RADIO_RX;
     ledOnRX();
@@ -164,10 +186,11 @@ bool radioStartLRTransmit(const uint8_t* payload3) {
   radio.implicitHeader(LORA_LR_IMPLICIT_LEN);
 
   dio1Flag = false;
+  femTX();
   int st = radio.startTransmit((uint8_t*)payload3, LORA_LR_IMPLICIT_LEN);
   if (st != RADIOLIB_ERR_NONE) {
     txFailCount++;
-    // Restore normal mod and RX before returning.
+    femRX();
     radio.setSpreadingFactor(activeSF);
     radio.explicitHeader();
     radio.startReceive();
@@ -198,6 +221,7 @@ void radioPoll() {
       radio.explicitHeader();
     }
     dio1Flag = false;
+    femRX();
     int st = radio.startReceive();
     if (st == RADIOLIB_ERR_NONE) { radioState = RADIO_RX; ledOnRX(); }
     else                         { radioState = RADIO_OFF; ledOff(); }
@@ -215,6 +239,7 @@ void radioPoll() {
       radio.setSpreadingFactor(activeSF);
       radio.explicitHeader();
     }
+    femRX();
     int st = radio.startReceive();
     if (st == RADIOLIB_ERR_NONE) { radioState = RADIO_RX; ledOnRX(); }
     else                         { radioState = RADIO_OFF; ledOff(); }
@@ -226,6 +251,7 @@ void radioPoll() {
   uint8_t buf[256];
   if (len == 0 || len > sizeof(buf)) {
     rxFailCount++;
+    femRX();
     radio.startReceive();
     radioState = RADIO_RX;
     ledOnRX();
@@ -236,6 +262,7 @@ void radioPoll() {
   float snr  = radio.getSNR();
 
   // Re-arm RX before processing so we don't miss the next packet.
+  femRX();
   radio.startReceive();
   radioState = RADIO_RX;
   ledOnRX();
