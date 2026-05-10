@@ -390,18 +390,25 @@ void nonblockingRadio() {
     Serial.println("radio: TX overrun, forcing through busy RX");
   }
 
-  // Time-based LR beacon: at least LR_BEACON_INTERVAL_MS between LR packets,
-  // independent of telem rate. Replaces the normal telem for this slot.
-  // Counts as delayed_tx if it can't fire (treated as a deferred normal telem).
-  static unsigned long lastLRMs = 0;
-  if (lrBeaconEnabled && (millis() - lastLRMs) >= LR_BEACON_INTERVAL_MS) {
+  // Time-based LR beacon: at the first telem opportunity past
+  // LR_BEACON_INTERVAL_MS since the last LR, this telem slot transmits an LR
+  // packet instead of a normal one. Schedule from `lastLRMs + interval` (not
+  // from now) so a delayed LR doesn't push the next one out.
+  static unsigned long lastLRDueMs = 0;   // when the current LR was supposed to fire
+  unsigned long nowMs = millis();
+  if (lrBeaconEnabled && (long)(nowMs - (lastLRDueMs + LR_BEACON_INTERVAL_MS)) >= 0) {
     uint8_t lrPayload[LORA_LR_IMPLICIT_LEN];
     buildLRPayload(lrPayload);
     if (radioStartLRTransmit(lrPayload)) {
-      lastLRMs    = millis();
+      lastLRDueMs += LR_BEACON_INTERVAL_MS;
+      // Catch up if we're way behind (e.g. LR was disabled for a while) so
+      // we don't burst out a backlog of LRs.
+      if ((long)(nowMs - lastLRDueMs) > (long)LR_BEACON_INTERVAL_MS) {
+        lastLRDueMs = nowMs;
+      }
       nextTelemUs = micros() + txIntervalUs;
     } else {
-      delayedTxCount++;
+      delayedTxCount++;   // try again next telem window
     }
     return;
   }
