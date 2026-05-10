@@ -120,6 +120,10 @@ bool bsRadioStartTx(const uint8_t* pkt, size_t len) {
   if (!bsLoraReady) return false;
   if (bsRadioState == BS_RADIO_TX) return false;
 
+  // Atomic with the standby below: if a packet is currently arriving (latched
+  // PREAMBLE/SYNC/HEADER IRQ flag), do NOT standby — that would abort the RX.
+  if (bsRadioRxBusy()) return false;
+
   radio.standby();
   dio1Flag = false;
   int st = radio.startTransmit((uint8_t*)pkt, len);

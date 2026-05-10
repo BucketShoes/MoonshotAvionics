@@ -118,6 +118,12 @@ bool radioStartTransmit(const uint8_t* pkt, size_t len) {
   if (!loraReady) return false;
   if (radioState == RADIO_TX) return false;
 
+  // Re-check immediately before issuing standby — the SX1262 latches PREAMBLE/
+  // SYNC/HEADER IRQ flags as soon as it sees them, even though they aren't
+  // mapped to DIO1. If any are set, a packet is currently arriving and we must
+  // not standby (which would abort the in-flight RX and produce nothing).
+  if (radioRxBusy()) return false;
+
   radio.standby();
   dio1Flag = false;
   int st = radio.startTransmit((uint8_t*)pkt, len);
