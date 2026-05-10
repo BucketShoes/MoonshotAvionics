@@ -413,6 +413,8 @@ void nonblockingLoopStats() {
     Serial.print("  RX: "); Serial.print(rxCount);
     Serial.print("  TXfail: "); Serial.print(txFailCount);
     Serial.print("  RXfail: "); Serial.print(rxFailCount);
+    Serial.print("  DelayedTX: "); Serial.print(delayedTxCount);
+    Serial.print("  InvalidRX: "); Serial.print(invalidRxCount);
     Serial.print("  recentMaxLoopUs: "); Serial.print(recentMaxLoopUs);
     Serial.print("  runningMaxLoopUs: "); Serial.print(runningMaxLoopUs);
     Serial.print("  bleCbTotal: "); Serial.print(bleCallbackTotalUs);

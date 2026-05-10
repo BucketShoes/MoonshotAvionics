@@ -234,6 +234,7 @@ static void buildPage0B(uint8_t* buf, size_t* pos) {
 
 // Page 0x0C: Radio health (6 bytes)
 static void buildPage0C(uint8_t* buf, size_t* pos) {
+//TODO: bring back delyed tx count / invalid rx count (invalid might already match the new rename of rxfailcount - but we lost the delayed counter - thats to tell us about unknown traffic possibly interfering
   writeU16(buf, pos, (uint16_t)txFailCount);
   writeU16(buf, pos, (uint16_t)rxFailCount);
   int8_t noiseFloor = -127;

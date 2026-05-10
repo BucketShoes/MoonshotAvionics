@@ -257,7 +257,6 @@ void processReceivedPacket(const uint8_t* pkt, size_t pktLen, int8_t rssi, int8_
 
   if (!verifyCommandHMAC(pkt, pktLen)) {
     lastAck.invalidHmacCount++;
-    rxFailCount++;
     Serial.println("CMD: HMAC fail");
     // Mark CMD ACK page fresh so BLE phone sees the updated invalidHmacCount.
     // Do NOT set lastAck.pending or overwrite lastAck.result — unsigned traffic
@@ -271,7 +270,7 @@ void processReceivedPacket(const uint8_t* pkt, size_t pktLen, int8_t rssi, int8_
 
   if (nonce <= highestNonce) {
     Serial.println("CMD: stale nonce");
-    rxFailCount++;
+    lastAck.invalidHmacCount++;
     return;
   }
 

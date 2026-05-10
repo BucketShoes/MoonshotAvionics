@@ -167,7 +167,7 @@ Thrust curve is special being so long, but it has special radio handling to be s
               channel busy)
       uint16  invalid RX count (packets received that failed
               validation — wrong type, wrong device ID, bad CRC,
-              etc)
+              etc- this does NOT include bad hmac, that goes in cmd ack page)
       int8    background RSSI, dB (average only measured when not transmitting and when no command incoming - to estimate channel noise outside of packet times)
       uint8   sync and slot flags
               [0]     radioSynced (1 = tight, 0 = wide. if currently using tight listen windows for power saving, because we have recently heard a valid command during a listen. if no commands heard, window becomes wider. false if using wide listen windows (pre-sync or no recent command heard)

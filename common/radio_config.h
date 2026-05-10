@@ -44,6 +44,7 @@
 #define PKT_COMMAND    0x9A
 #define PKT_BACKHAUL   0xE2
 #define PKT_LOG_CHUNK  0xCA
+#define PKT_LONGRANGE  0xBB
 
 // ===================== DEVICE IDs =====================
 
