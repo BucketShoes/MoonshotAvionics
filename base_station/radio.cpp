@@ -41,10 +41,10 @@ static SX1262 radio = new Module(LORA_NSS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA
 
 // ===================== DIO1 FLAG =====================
 
-static volatile bool dio1Flag = false;
-static volatile bool dio1Time = 0;
+static volatile bool    dio1Flag = false;
+static volatile int64_t dio1Time = 0;   // esp_timer_get_time() at IRQ; ISR-safe.
 
-IRAM_ATTR static void onDio1() { dio1Flag = true; dio1Time = esp_timer_get_time();}
+IRAM_ATTR static void onDio1() { dio1Time = esp_timer_get_time(); dio1Flag = true; }
 
 // ===================== HELPERS =====================
 
@@ -101,6 +101,48 @@ void bsRadioApplyConfig() {
   else                         { bsRadioState = BS_RADIO_OFF; ledOff(); }
 }
 
+// ===================== LR LISTEN MODE =====================
+// Switches the radio to LR (SF12, implicit-header) RX for a fixed window,
+// then auto-reverts. Implemented as a state flag + deadline checked in poll.
+// While in LR listen, normal telem RX is paused.
+
+static bool          bsLRListening      = false;
+static unsigned long bsLRListenUntilMs  = 0;
+
+bool bsRadioInLRListen() { return bsLRListening; }
+
+static void bsApplyLRMode() {
+  radio.standby();
+  radio.setSpreadingFactor(LORA_LR_SF);
+  radio.implicitHeader(LORA_LR_IMPLICIT_LEN);
+  dio1Flag = false;
+  int st = radio.startReceive();
+  if (st == RADIOLIB_ERR_NONE) { bsRadioState = BS_RADIO_RX; ledOnRX(); }
+  else                         { bsRadioState = BS_RADIO_OFF; ledOff(); }
+}
+
+static void bsRevertFromLRMode() {
+  radio.standby();
+  radio.setSpreadingFactor(activeSF);
+  radio.explicitHeader();
+  dio1Flag = false;
+  int st = radio.startReceive();
+  if (st == RADIOLIB_ERR_NONE) { bsRadioState = BS_RADIO_RX; ledOnRX(); }
+  else                         { bsRadioState = BS_RADIO_OFF; ledOff(); }
+}
+
+void bsRadioEnterLRListen(uint32_t durationMs) {
+  if (!bsLoraReady) return;
+  if (durationMs == 0) {
+    if (bsLRListening) { bsLRListening = false; bsRevertFromLRMode(); }
+    return;
+  }
+  bsLRListening     = true;
+  bsLRListenUntilMs = millis() + durationMs;
+  bsApplyLRMode();
+  Serial.print("bs radio: LR listen for "); Serial.print(durationMs); Serial.println(" ms");
+}
+
 // ===================== RX-BUSY CHECK =====================
 
 bool bsRadioRxBusy() {
@@ -148,6 +190,16 @@ bool bsRadioStartTx(const uint8_t* pkt, size_t len, bool forceThroughBusy) {
 void bsRadioPoll() {
   if (!bsLoraReady) return;
 
+  // LR-listen window expiry: revert to normal modulation when the deadline
+  // passes. Packet receive in LR mode happens via the normal RX path below
+  // (with implicitHeader having been set up by bsApplyLRMode).
+  if (bsLRListening && (long)(millis() - bsLRListenUntilMs) >= 0) {
+    bsLRListening = false;
+    Serial.println("bs radio: LR listen window expired, reverting");
+    bsRevertFromLRMode();
+    return;
+  }
+
   // TX watchdog — recover from missed TxDone IRQ (wedged radio).
   if (bsRadioState == BS_RADIO_TX && (millis() - bsTxStartedMs) > BS_TX_WATCHDOG_MS) {
     Serial.println("bs radio: TX watchdog fired — forcing standby+RX");
@@ -192,8 +244,18 @@ void bsRadioPoll() {
 
   if (st == RADIOLIB_ERR_NONE) {
     bsRxCount++;
-    if (len >= 1 && buf[0] == PKT_TELEMETRY) bsLastTelemRxMs = millis();
-    bsOnPacketReceived(buf, len, snr, rssi);
+    if (bsLRListening) {
+      // LR packet: 3 bytes on air with implicit header. Prepend type+devid
+      // so the rest of the pipeline sees a 5-byte normal packet.
+      uint8_t lrFrame[2 + LORA_LR_IMPLICIT_LEN];
+      lrFrame[0] = PKT_LONGRANGE;
+      lrFrame[1] = ROCKET_DEVICE_ID;
+      memcpy(lrFrame + 2, buf, (len < LORA_LR_IMPLICIT_LEN) ? len : LORA_LR_IMPLICIT_LEN);
+      bsOnPacketReceived(lrFrame, 2 + LORA_LR_IMPLICIT_LEN, snr, rssi);
+    } else {
+      if (len >= 1 && buf[0] == PKT_TELEMETRY) bsLastTelemRxMs = millis();
+      bsOnPacketReceived(buf, len, snr, rssi);
+    }
   } else {
     bsRxFailCount++;
   }

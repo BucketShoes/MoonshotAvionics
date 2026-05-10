@@ -209,11 +209,18 @@ static void buildPage09(uint8_t* buf, size_t* pos) {
 }
 
 // Page 0x0A: Command ack + signal quality (10 bytes)
+// Wire format: rssi as int8 dBm, snr as int8 dB*4. NaN (BLE-sourced) → LOG_SNR_LOCAL.
 static void buildPage0A(uint8_t* buf, size_t* pos) {
+  int8_t rssi8 = isnan(lastAck.rssi)
+                   ? (int8_t)LOG_SNR_LOCAL
+                   : (int8_t)constrain((int)lastAck.rssi, -128, 127);
+  int8_t snr4  = isnan(lastAck.snr)
+                   ? (int8_t)LOG_SNR_LOCAL
+                   : (int8_t)constrain((int)(lastAck.snr * 4.0f), -128, 127);
   writeU32(buf, pos, lastAck.nonce);
   writeU8(buf, pos, lastAck.result);
-  writeU8(buf, pos, (uint8_t)lastAck.rssi);
-  writeU8(buf, pos, (uint8_t)lastAck.snr);
+  writeU8(buf, pos, (uint8_t)rssi8);
+  writeU8(buf, pos, (uint8_t)snr4);
   writeU16(buf, pos, lastAck.invalidHmacCount);
   writeU8(buf, pos, lastAck.rxPosInSlot);
 }
@@ -232,11 +239,14 @@ static void buildPage0B(uint8_t* buf, size_t* pos) {
   writeU16(buf, pos, pyroFlags);
 }
 
-// Page 0x0C: Radio health (6 bytes)
+// Page 0x0C: Radio health (6 bytes) — see spec.
+//   uint16  delayedTxCount  (telem TX postponed because channel was busy)
+//   uint16  invalidRxCount  (rx packets failing wire validation: type, devid, CRC)
+//   uint8   noiseFloor (dBm; -127 sentinel = unknown — bg-noise tracking not yet wired in)
+//   uint8   syncFlags  ([0]=base-heard recently)
 static void buildPage0C(uint8_t* buf, size_t* pos) {
-//TODO: bring back delyed tx count / invalid rx count (invalid might already match the new rename of rxfailcount - but we lost the delayed counter - thats to tell us about unknown traffic possibly interfering
-  writeU16(buf, pos, (uint16_t)txFailCount);
-  writeU16(buf, pos, (uint16_t)rxFailCount);
+  writeU16(buf, pos, delayedTxCount);
+  writeU16(buf, pos, invalidRxCount);
   int8_t noiseFloor = -127;
   writeU8(buf, pos, (uint8_t)noiseFloor);
   uint8_t syncFlags = radioInSync() ? 0x01 : 0x00;
@@ -474,6 +484,31 @@ size_t buildTelemetryPacket(uint8_t* buf) {
   }
 
   return pos;
+}
+
+// ===================== LR BEACON PAYLOAD =====================
+// 11+11+1 bits packed into 3 bytes. Lat/lon use a coarser frac than the
+// normal telem encoding (0.0005° vs 0.00002°) to fit in 11 bits.
+
+static uint16_t encodeLRFrac(double degrees, bool valid) {
+  if (!valid) return 2001;   // sentinel
+  double absDeg = fabs(degrees);
+  double frac = absDeg - floor(absDeg);
+  uint32_t steps = (uint32_t)(frac / 0.0005);
+  if (steps > 2000) steps = 2000;
+  return (uint16_t)steps;
+}
+
+void buildLRPayload(uint8_t buf[LORA_LR_IMPLICIT_LEN]) {
+  uint16_t latFrac = encodeLRFrac(gps.lat, gps.valid);
+  uint16_t lonFrac = encodeLRFrac(gps.lon, gps.valid);
+  uint32_t lowBatt = (batteryMv > 0 && batteryMv <= 3400) ? 1 : 0;
+  uint32_t word = (latFrac & 0x7FF)
+                | ((lonFrac & 0x7FF) << 11)
+                | ((lowBatt & 0x1) << 22);
+  buf[0] = (uint8_t)(word & 0xFF);
+  buf[1] = (uint8_t)((word >> 8) & 0xFF);
+  buf[2] = (uint8_t)((word >> 16) & 0xFF);
 }
 
 // ===================== LOG WRITING =====================

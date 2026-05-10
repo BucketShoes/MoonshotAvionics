@@ -357,13 +357,15 @@ void nonblockingPeakTracking() {
   logPages[LOGI_SYS_HEALTH].freshMask |= 0xFF;
 }
 
-// ===================== TELEMETRY TX SCHEDULER =====================
-// Pumps the radio (RX/TxDone IRQ handling) and sends a telemetry packet on
-// the configured cadence. Replaces the old slot machine.
+// ===================== RADIO TICK =====================
+// Pumps the radio (RX, TxDone IRQ handling — see radioPoll()) and, when
+// telemetry is due and the channel is clear, kicks off a TX. The DIO1 ISR
+// just sets a flag + timestamp; all real work happens in this poll path
+// from the main loop.
 
 static unsigned long nextTelemUs = 0;
 
-void nonblockingTelemTx() {
+void nonblockingRadio() {
   radioPoll();
   if (!loraReady || !txSendingEnabled) return;
   if (txIntervalUs == 0) return;            // disabled (rate==0)
@@ -380,9 +382,26 @@ void nonblockingTelemTx() {
   // and we'd otherwise never get on air.
   bool rxBusy = radioRxBusy();
   bool overrun = ((long)(now - nextTelemUs) > (long)RADIO_TX_OVERRUN_US);
-  if (rxBusy && !overrun) return;
+  if (rxBusy && !overrun) {
+    delayedTxCount++;   // spec 0x0C: telem postponed due to channel busy
+    return;
+  }
   if (rxBusy && overrun) {
     Serial.println("radio: TX overrun, forcing through busy RX");
+  }
+
+  // Every Nth telem cycle, send an LR beacon instead of normal telem.
+  // The LR TX is blocking on SF12 airtime (~1.3s for 3 bytes BW125) and
+  // mid-flight loop-stall implications are noted in radio.h.
+  static uint32_t telemCycleCount = 0;
+  if ((telemCycleCount % LR_BEACON_EVERY_N_TELEM) == (LR_BEACON_EVERY_N_TELEM - 1)) {
+    uint8_t lrPayload[LORA_LR_IMPLICIT_LEN];
+    buildLRPayload(lrPayload);
+    if (radioTxLRBeacon(lrPayload)) {
+      nextTelemUs = micros() + txIntervalUs;
+      telemCycleCount++;
+    }
+    return;
   }
 
   uint8_t pkt[256];
@@ -390,6 +409,7 @@ void nonblockingTelemTx() {
   if (len == 0) return;
   if (radioStartTransmit(pkt, len, /*forceThroughBusy=*/overrun)) {
     nextTelemUs = now + txIntervalUs;
+    telemCycleCount++;
   }
 }
 
@@ -540,7 +560,7 @@ void loop() {
   nonblockingLogging();
   t1 = micros(); slotUs[SLOT_LOGGING] = t1 - t0; t0 = t1;
 
-  nonblockingTelemTx();
+  nonblockingRadio();
   t1 = micros(); slotUs[SLOT_RADIO] = t1 - t0; t0 = t1;
 
   nonblockingBle();

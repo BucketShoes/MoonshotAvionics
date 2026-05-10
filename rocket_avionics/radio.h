@@ -44,6 +44,15 @@ extern uint32_t txCount;
 extern uint32_t rxCount;
 extern uint32_t txFailCount;
 extern uint32_t rxFailCount;
+
+// Spec page 0x0C counters (kept across the rewrite — still meaningful):
+//  - delayedTxCount: telem TX scheduler tick that found RX busy and deferred.
+//  - invalidRxCount: received packets that failed wire validation
+//                    (wrong type, wrong device ID, bad CRC, length out of range).
+//                    Does NOT include HMAC failures — those go in cmd-ack page.
+extern uint16_t delayedTxCount;
+extern uint16_t invalidRxCount;
+
 extern int64_t  lastValidCmdUs;     // esp_timer_get_time() of last accepted command
 
 // ===================== PUBLIC API =====================
@@ -80,6 +89,17 @@ bool radioStartTransmit(const uint8_t* pkt, size_t len, bool forceThroughBusy = 
 // True if the radio currently has preamble or header sync on an incoming packet
 // — i.e. a TX would clobber an in-flight reception. Cheap (~50µs SPI read).
 bool radioRxBusy();
+
+// Transmit one LR (long-range, SF12, implicit header, 3-byte) packet, then
+// restore normal telem modulation and re-arm RX. Caller is responsible for
+// gating frequency (e.g. every Nth telem cycle). Returns true on success.
+// Blocking: the actual SF12 airtime (~1.5s for 3 bytes at SF12/BW125). Only
+// call when armed-loop timing is permissive — i.e. not while armed for active
+// control. For motor-eject parachute deploy at apogee, ms-scale stalls are OK
+// but a full second is not, so this should be conditioned on !isArmed by
+// the caller if needed. Currently called from the rocket TX scheduler which
+// runs unconditionally; consider this a latent constraint.
+bool radioTxLRBeacon(const uint8_t* payload3);
 
 // Pump the radio state machine: read RX packets, handle TxDone, restart RX.
 // Call every loop iteration. Worst-case ~1 ms (SPI read of one packet).

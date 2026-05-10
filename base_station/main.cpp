@@ -297,18 +297,20 @@ bool queueCommandTx(const uint8_t* body, size_t bodyLen, String& errorMsg) {
   }
   if (sends == 0 || sends > 20) sends = 1;
 
+  // Stage into a local buffer so a failed verify can't corrupt an in-flight
+  // valid cmdTx that's still being retransmitted (cmdTx.active=true,
+  // sent<sends). Only commit to cmdTx after HMAC + nonce checks pass.
+  uint8_t staged[sizeof(cmdTx.pkt)];
+  memcpy(staged, body + 4, pktLen);
 
-  //TODO: @@@ is this putting the command in a place the sending would see it before checking the nonce? and also not setting the length until later? so a real c9ommand woudl be overwritten by an unverified command, possibly with buffer overrun? do any flags, etc stop dispatch looking at cmdTx.pkt?
-  memcpy(cmdTx.pkt, body + 4, pktLen);
-
-  if (!verifyCommandHMAC(cmdTx.pkt, pktLen)) {
+  if (!verifyCommandHMAC(staged, pktLen)) {
     Serial.println("CMD TX rejected: HMAC fail");
     errorMsg = "hmac fail"; return false;
   }
 
   if (pktLen >= 7) {
-    uint32_t pktNonce = (uint32_t)cmdTx.pkt[3] | ((uint32_t)cmdTx.pkt[4] << 8) |
-                        ((uint32_t)cmdTx.pkt[5] << 16) | ((uint32_t)cmdTx.pkt[6] << 24);
+    uint32_t pktNonce = (uint32_t)staged[3] | ((uint32_t)staged[4] << 8) |
+                        ((uint32_t)staged[5] << 16) | ((uint32_t)staged[6] << 24);
     if (pktNonce <= highestNonce) {
       Serial.println("CMD TX rejected: stale nonce");
       errorMsg = "stale nonce"; return false;
@@ -317,6 +319,12 @@ bool queueCommandTx(const uint8_t* body, size_t bodyLen, String& errorMsg) {
     bsNvs.putUInt("nonce", highestNonce);
   }
 
+  // Commit. cmdTx.active is set last so dispatchCmdTx won't observe a
+  // half-built state. (Single-task assumption between dispatch and queue;
+  // BLE/HTTP callbacks running concurrently with main-loop dispatch get a
+  // brief window between the field writes and active=true — they read
+  // !active and skip, which is fine.)
+  memcpy(cmdTx.pkt, staged, pktLen);
   cmdTx.pktLen = pktLen;
   cmdTx.sends = sends;
   cmdTx.sent = 0;
@@ -351,7 +359,8 @@ void pushToAllTransports(const uint8_t* wsBuf, size_t wsLen) {
 // Invoked from radio.cpp bsHandleRxDone() for every valid received packet.
 
 void bsOnPacketReceived(const uint8_t* buf, size_t len, float snrF, float rssiF) {
-  int8_t snr4 = (int8_t)(snrF * 4);
+  // Wire/log format only: log_store records snr in dB*4 (spec).
+  int8_t snr4 = (int8_t)constrain((int)(snrF * 4.0f), -128, 127);
   uint32_t nowMs = millis();
 
   int32_t recNum = -1;

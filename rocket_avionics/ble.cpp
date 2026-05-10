@@ -175,8 +175,8 @@ class BleCmdCB : public NimBLECharacteristicCallbacks {
     }
 
     const uint8_t* pkt = data + 4;
-    // Use LOG_SNR_LOCAL (0x7F) as sentinel for BLE-sourced commands
-    processReceivedPacket(pkt, pktLen, LOG_SNR_LOCAL, LOG_SNR_LOCAL);
+    // NaN RSSI/SNR marks BLE-sourced (not from air).
+    processReceivedPacket(pkt, pktLen, NAN, NAN);
 
     BLE_CB_END();
   }

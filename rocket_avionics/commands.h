@@ -14,10 +14,10 @@
 struct CommandAck {
   uint32_t nonce;
   uint8_t  result;            // CMD_OK or CMD_ERR_*
-  int8_t   rssi;              // dBm of the command packet
-  int8_t   snr;               // dB*4 of the command packet
+  float    rssi;              // dBm of the command packet (NaN = not from air, e.g. BLE)
+  float    snr;               // dB of the command packet (NaN = not from air)
   uint16_t invalidHmacCount;  // running count of HMAC failures
-  uint8_t  rxPosInSlot;       // position within current slot when command RX completed, 2ms units (255 = 510ms)
+  uint8_t  rxPosInSlot;       // legacy; unused in non-slotted mode (kept in struct for wire-format compat)
   bool     pending;           // true = force 0x0A page on next TX
 };
 
@@ -38,7 +38,9 @@ extern uint32_t highestNonce;  // monotonic, persisted to NVS before acting
 bool verifyCommandHMAC(const uint8_t* pkt, size_t pktLen);
 
 // Parse a received LoRa packet: check type, device ID, HMAC, nonce, then dispatch.
-void processReceivedPacket(const uint8_t* pkt, size_t pktLen, int8_t rssi, int8_t snr);
+// rssi in dBm, snr in dB. Both are floats end-to-end; only packed at the wire.
+// BLE-relayed commands pass NaN for both to mark them as not-from-air.
+void processReceivedPacket(const uint8_t* pkt, size_t pktLen, float rssi, float snr);
 
 // Execute a validated command. Sets lastAck for telemetry ack page.
 void executeCommand(uint8_t cmdId, uint32_t nonce, const uint8_t* params, size_t paramsLen);

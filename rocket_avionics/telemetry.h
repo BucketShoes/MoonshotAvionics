@@ -58,6 +58,17 @@ extern LogPageConfig logPages[LOGI_COUNT];
 // Build a complete telemetry packet into buf (LoRa format). Returns packet length.
 size_t buildTelemetryPacket(uint8_t* buf);
 
+// Build the 3-byte on-air payload for the LR (long-range / SF12 / implicit
+// header) beacon. Layout:
+//   [10:0]  lat fraction (11 bits, 0..2000 = 0.0005° steps; 2001..2047 = error codes)
+//   [21:11] lon fraction (11 bits, same encoding)
+//   [22]    low-battery flag (1 = battery <= 3400 mV)
+//   [31:23] reserved (zero)
+// Receiver should prepend [PKT_LONGRANGE][ROCKET_DEVICE_ID] when handing
+// the packet to the rest of the pipeline so it looks like a 5-byte normal
+// packet (matches log/dashboard expectations).
+void buildLRPayload(uint8_t buf[LORA_LR_IMPLICIT_LEN]);
+
 // Build a telemetry header as a BLE record: [len][0xAF][deviceId][gpsFrac1][gpsFrac2][fusionAlt s16][stateFlags u16]
 // len=10 (type byte + 9 data bytes). Returns total bytes written (len byte + data).
 size_t buildHeaderRecord(uint8_t* buf, size_t maxLen);

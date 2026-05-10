@@ -23,10 +23,12 @@ int8_t   activePower   = DEFAULT_POWER;
 float    activeFreqMHz = 0.0f;
 float    activeBwKHz   = 0.0f;
 
-uint32_t txCount      = 0;
-uint32_t rxCount      = 0;
-uint32_t txFailCount  = 0;
-uint32_t rxFailCount  = 0;
+uint32_t txCount        = 0;
+uint32_t rxCount        = 0;
+uint32_t txFailCount    = 0;
+uint32_t rxFailCount    = 0;
+uint16_t delayedTxCount = 0;
+uint16_t invalidRxCount = 0;
 int64_t  lastValidCmdUs = 0;
 
 // ===================== RADIOLIB MODULE =====================
@@ -36,11 +38,10 @@ static SX1262 radio = new Module(LORA_NSS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA
 
 // ===================== DIO1 FLAG =====================
 
-static volatile bool dio1Flag = false;
-static volatile bool dio1Time = 0;
+static volatile bool    dio1Flag = false;
+static volatile int64_t dio1Time = 0;   // esp_timer_get_time() at IRQ; ISR-safe.
 
-
-IRAM_ATTR static void onDio1() { dio1Flag = true; dio1Time = esp_timer_get_time();}
+IRAM_ATTR static void onDio1() { dio1Time = esp_timer_get_time(); dio1Flag = true; }
 
 // ===================== HELPERS =====================
 
@@ -143,6 +144,40 @@ bool radioStartTransmit(const uint8_t* pkt, size_t len, bool forceThroughBusy) {
   return true;
 }
 
+// ===================== LR (LONG-RANGE) BEACON =====================
+// One-shot SF12 implicit-header transmit, then revert to normal telem
+// modulation and re-arm RX. Blocking on SF12 airtime — see radio.h note.
+
+bool radioTxLRBeacon(const uint8_t* payload3) {
+  if (!loraReady) return false;
+  if (radioState == RADIO_TX) return false;
+  if (radioRxBusy()) return false;
+
+  radio.standby();
+
+  // Switch to LR modulation. Channel/BW/CR/preamble unchanged.
+  radio.setSpreadingFactor(LORA_LR_SF);
+  // RadioLib uses implicit header when payloadLen is set on a fixed-len modem.
+  // The simplest path: implicitHeader(len) sets implicit + fixed length.
+  radio.implicitHeader(LORA_LR_IMPLICIT_LEN);
+
+  // Blocking transmit — at SF12/BW125, 3 bytes is ~1.3s airtime.
+  int st = radio.transmit((uint8_t*)payload3, LORA_LR_IMPLICIT_LEN);
+
+  // Restore normal telem modulation regardless of TX result.
+  radio.setSpreadingFactor(activeSF);
+  radio.explicitHeader();
+
+  dio1Flag = false;
+  int st2 = radio.startReceive();
+  if (st2 == RADIOLIB_ERR_NONE) { radioState = RADIO_RX; ledOnRX(); }
+  else                          { radioState = RADIO_OFF; ledOff(); }
+
+  if (st == RADIOLIB_ERR_NONE) { txCount++; return true; }
+  txFailCount++;
+  return false;
+}
+
 // ===================== POLL =====================
 
 void radioPoll() {
@@ -193,10 +228,9 @@ void radioPoll() {
 
   if (st == RADIOLIB_ERR_NONE) {
     rxCount++;
-    int8_t rssi8 = (int8_t)constrain((int)rssi, -128, 127);
-    int8_t snr4  = (int8_t)constrain((int)(snr * 4.0f), -128, 127);
-    processReceivedPacket(buf, len, rssi8, snr4);
+    processReceivedPacket(buf, len, rssi, snr);
   } else {
     rxFailCount++;
+    if (st == RADIOLIB_ERR_CRC_MISMATCH) invalidRxCount++;   // spec 0x0C
   }
 }

@@ -18,7 +18,7 @@ uint8_t  hmacKey[HMAC_KEY_LEN];
 bool     hmacKeyValid = false;
 uint32_t highestNonce = 0;
 
-CommandAck lastAck = {0, CMD_ERR_UNKNOWN, 0, 0, 0, 0, false};
+CommandAck lastAck = {0, CMD_ERR_UNKNOWN, NAN, NAN, 0, 0, false};
 // lastValidCmdUs is defined in radio.cpp (slot-clock state).
 
 // ===================== HMAC-SHA256 =====================
@@ -229,8 +229,8 @@ void executeCommand(uint8_t cmdId, uint32_t nonce, const uint8_t* params, size_t
 
 // ===================== PACKET RECEPTION =====================
 
-void processReceivedPacket(const uint8_t* pkt, size_t pktLen, int8_t rssi, int8_t snr) {
-  bool isBle = (rssi == LOG_SNR_LOCAL && snr == LOG_SNR_LOCAL);
+void processReceivedPacket(const uint8_t* pkt, size_t pktLen, float rssi, float snr) {
+  bool isBle = isnan(rssi) && isnan(snr);
   if (isBle) {
     Serial.print("BLE RX: ");
   } else {
@@ -241,17 +241,19 @@ void processReceivedPacket(const uint8_t* pkt, size_t pktLen, int8_t rssi, int8_
     Serial.print(" ("); Serial.print(pktLen); Serial.println("B BLE)");
   } else {
     Serial.print(" ("); Serial.print(pktLen);
-    Serial.print("B RSSI="); Serial.print((int)rssi);
-    Serial.print(" SNR="); Serial.print((float)snr, 2);
+    Serial.print("B RSSI="); Serial.print(rssi, 1);
+    Serial.print(" SNR="); Serial.print(snr, 2);
     Serial.println(")");
   }
 
-  if (pktLen < 17) { rxFailCount++; return; }
-  if (pkt[0] != PKT_COMMAND) { rxFailCount++; return; }
+  // Spec 0x0C invalidRxCount: wrong type, wrong device id, bad length.
+  if (pktLen < 17)            { rxFailCount++; invalidRxCount++; return; }
+  if (pkt[0] != PKT_COMMAND)  { rxFailCount++; invalidRxCount++; return; }
 
   if (pkt[1] != DEVICE_ID) {
     Serial.print("CMD: saw other target:"); Serial.print(pkt[1]);
     Serial.print(" we are:"); Serial.println(DEVICE_ID);
+    invalidRxCount++;
     return;
   }
 
@@ -279,7 +281,7 @@ void processReceivedPacket(const uint8_t* pkt, size_t pktLen, int8_t rssi, int8_
   lastValidCmdUs = esp_timer_get_time();
 
   lastAck.rssi = rssi;
-  lastAck.snr  = snr;     // already in dB*4 units (radio.cpp scales)
+  lastAck.snr  = snr;
   lastAck.rxPosInSlot = 0;
 
   size_t paramsOffset = 7;
@@ -289,9 +291,11 @@ void processReceivedPacket(const uint8_t* pkt, size_t pktLen, int8_t rssi, int8_
   Serial.print("CMD: 0x"); Serial.print(cmdId, HEX);
   Serial.print(" nonce="); Serial.println(nonce);
 
-  // Log raw command packet to flash. SNR is already in dB*4 (set by radio.cpp).
+  // Log raw command packet to flash. Wire format is dB*4 (spec).
   if (logStoreOk && pktLen > 0 && pktLen <= LOG_MAX_PAYLOAD) {
-    logStore.writeRecord(pkt, (uint8_t)pktLen, snr, millis());
+    int8_t snr4 = isnan(snr) ? (int8_t)LOG_SNR_LOCAL
+                             : (int8_t)constrain((int)(snr * 4.0f), -128, 127);
+    logStore.writeRecord(pkt, (uint8_t)pktLen, snr4, millis());
   }
 
   executeCommand(cmdId, nonce, params, paramsLen);

@@ -46,6 +46,16 @@
 #define PKT_LOG_CHUNK  0xCA
 #define PKT_LONGRANGE  0xBB
 
+// ===================== LONG RANGE (LR) BEACON =====================
+// Periodic SF12 implicit-header packet. 3-byte on-air payload (lat frac 11b
+// + lon frac 11b + low-batt 1b + 9 spare bits). RX-side prepends type/devid
+// to make a 5-byte logical packet so the rest of the pipeline treats it
+// uniformly. No sync — sender just briefly switches modulation, sends, and
+// reverts. Base ignores LR unless put into "LR listen" mode.
+#define LORA_LR_SF              12
+#define LORA_LR_IMPLICIT_LEN    3       // bytes on air
+#define LR_BEACON_EVERY_N_TELEM 10      // 1 LR packet per N normal telem packets
+
 // ===================== DEVICE IDs =====================
 
 #define ROCKET_DEVICE_ID  0x92
