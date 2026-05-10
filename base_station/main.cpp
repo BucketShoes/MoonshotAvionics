@@ -295,7 +295,7 @@ bool queueCommandTx(const uint8_t* body, size_t bodyLen, String& errorMsg) {
   if (pktLen == 0 || pktLen > 60 || (size_t)(4 + pktLen) > bodyLen) {
     errorMsg = "bad len"; return false;
   }
-  if (sends == 0 || sends > 10) sends = 1;
+  if (sends == 0 || sends > 20) sends = 1;
 
   memcpy(cmdTx.pkt, body + 4, pktLen);
 

@@ -18,22 +18,22 @@ static const uint8_t LOG_PAGE_TYPE[] = {
 };
 
 LogPageConfig logPages[LOGI_COUNT] = {
-  { 1000000, 0, 0 },  // 0xAF telem header (fusion alt etc.)
-  { 1000000, 0, 0 },  // GPS pos
-  { 1000000, 0, 0 },  // Baro
-  { 1000000, 0, 0 },  // Mag
-  { 1000000, 0, 0 },  // Accel
-  { 1000000, 0, 0 },  // Gyro
-  { 1000000, 0, 0 },  // GPS extra
-  { 0,       0, 0 },  // Kalman: disabled (not implemented)
-  { 1000000, 0, 0 },  // System health
-  {10000000, 0, 0 },  // Peaks
-  {10000000, 0, 0 },  // Cmd ack (also event-driven)
-  { 1000000, 0, 0 },  // Flight status
-  {10000000, 0, 0 },  // Radio health
-  {10000000, 0, 0 },  // Timestamp
-  { 0,       0, 0 },  // Thrust curve: intervalUs=0, never written to flash on automatic cycle, only when triggered - TODO: fix all the other places falsely claiming its never logged, and fix that bug where its not logged on coast. that was incorrect, it should log on coast, just not regularly on timer
-  { 1000000, 0, 0 },  // Pyro status
+  {   100'000, 0, 0 },  // 0xAF telem header (fusion alt etc.)
+  { 1'000'000, 0, 0 },  // GPS pos
+  {   100'000, 0, 0 },  // Baro
+  { 1'000'000, 0, 0 },  // Mag
+  {   100'000, 0, 0 },  // Accel
+  { 1'000'000, 0, 0 },  // Gyro
+  { 1'000'000, 0, 0 },  // GPS extra
+  {         0, 0, 0 },  // Kalman: disabled (not implemented)
+  { 1'000'000, 0, 0 },  // System health
+  {10'000'000, 0, 0 },  // Peaks
+  {10'000'000, 0, 0 },  // Cmd ack (also event-driven)
+  { 1'000'000, 0, 0 },  // Flight status
+  {10'000'000, 0, 0 },  // Radio health
+  {10'000'000, 0, 0 },  // Timestamp
+  {         0, 0, 0 },  // Thrust curve: intervalUs=0, never written to flash on automatic cycle, only when triggered - TODO: fix all the other places falsely claiming its never logged, and fix that bug where its not logged on coast. that was incorrect, it should log on coast, just not regularly on timer
+  { 1'000'000, 0, 0 },  // Pyro status
 };
 
 // ===================== PAGE CYCLE =====================

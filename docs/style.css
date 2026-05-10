@@ -35,7 +35,7 @@
   .tb button{background:#333;color:#aaa;border:1px solid #555;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer}
   .tb button:disabled{opacity:0.3} .tb button.act{background:#063;color:#0f0;border-color:#0a0}
   .tb span{font-size:11px;color:#888}
-  #log{background:#0a0a0a;border:1px solid #333;border-radius:4px;padding:4px;height:180px;overflow-y:auto;font-size:10px;line-height:1.3}
+  #log{background:#0a0a0a;border:1px solid #333;border-radius:4px;padding:4px;height:180px;overflow-y:auto;font-size:10px;line-height:1.3;overflow-anchor:none;}
   .le{border-bottom:1px solid #1a1a1a;padding:1px 0}
   .cmd-section{background:#1a1a1a;border:1px solid #533;border-radius:4px;padding:8px;margin-top:8px}
   .cmd-section h2{font-size:13px;color:#f80;margin-bottom:6px}
