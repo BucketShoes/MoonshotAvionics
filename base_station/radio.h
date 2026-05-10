@@ -64,6 +64,9 @@ void bsRadioApplyConfig();
 // and bsRadioPoll() flips back to BS_RADIO_RX on TxDone IRQ.
 bool bsRadioStartTx(const uint8_t* pkt, size_t len);
 
+// True if radio currently has preamble/header sync on an incoming packet.
+bool bsRadioRxBusy();
+
 // Pump the radio: handle RxDone / TxDone IRQs, restart RX. Call every loop.
 void bsRadioPoll();
 

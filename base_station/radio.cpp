@@ -6,6 +6,12 @@
 #include "radio.h"
 #include "secrets.h"
 
+// ===================== LED HELPERS =====================
+
+static inline void ledOnTX() { ledcWrite(LED_PIN, 64); }
+static inline void ledOnRX() { ledcWrite(LED_PIN, 5); }
+static inline void ledOff()  { ledcWrite(LED_PIN, 0); }
+
 // ===================== HARDWARE / GLOBALS =====================
 
 SPIClass     bsLoraSPI(FSPI);
@@ -70,6 +76,7 @@ bool bsRadioInit() {
 
   bsLoraReady  = true;
   bsRadioState = BS_RADIO_RX;
+  ledOnRX();
   return true;
 }
 
@@ -89,10 +96,25 @@ void bsRadioApplyConfig() {
 
   dio1Flag = false;
   int st = radio.startReceive();
-  bsRadioState = (st == RADIOLIB_ERR_NONE) ? BS_RADIO_RX : BS_RADIO_OFF;
+  if (st == RADIOLIB_ERR_NONE) { bsRadioState = BS_RADIO_RX; ledOnRX(); }
+  else                         { bsRadioState = BS_RADIO_OFF; ledOff(); }
+}
+
+// ===================== RX-BUSY CHECK =====================
+
+bool bsRadioRxBusy() {
+  if (!bsLoraReady) return false;
+  if (bsRadioState != BS_RADIO_RX) return false;
+  uint32_t irq = radio.getIrqFlags();
+  return (irq & (RADIOLIB_SX126X_IRQ_PREAMBLE_DETECTED |
+                 RADIOLIB_SX126X_IRQ_SYNC_WORD_VALID |
+                 RADIOLIB_SX126X_IRQ_HEADER_VALID)) != 0;
 }
 
 // ===================== TX =====================
+
+static unsigned long bsTxStartedMs = 0;
+#define BS_TX_WATCHDOG_MS  1500   // longer than any sane airtime; recovers wedged TX
 
 bool bsRadioStartTx(const uint8_t* pkt, size_t len) {
   if (!bsLoraReady) return false;
@@ -105,9 +127,12 @@ bool bsRadioStartTx(const uint8_t* pkt, size_t len) {
     bsTxFailCount++;
     radio.startReceive();
     bsRadioState = BS_RADIO_RX;
+    ledOnRX();
     return false;
   }
   bsRadioState = BS_RADIO_TX;
+  bsTxStartedMs = millis();
+  ledOnTX();
   bsLastCmdSentMs = millis();
   return true;
 }
@@ -116,6 +141,19 @@ bool bsRadioStartTx(const uint8_t* pkt, size_t len) {
 
 void bsRadioPoll() {
   if (!bsLoraReady) return;
+
+  // TX watchdog — recover from missed TxDone IRQ (wedged radio).
+  if (bsRadioState == BS_RADIO_TX && (millis() - bsTxStartedMs) > BS_TX_WATCHDOG_MS) {
+    Serial.println("bs radio: TX watchdog fired — forcing standby+RX");
+    bsTxFailCount++;
+    radio.standby();
+    dio1Flag = false;
+    int st = radio.startReceive();
+    if (st == RADIOLIB_ERR_NONE) { bsRadioState = BS_RADIO_RX; ledOnRX(); }
+    else                         { bsRadioState = BS_RADIO_OFF; ledOff(); }
+    return;
+  }
+
   if (!dio1Flag) return;
   dio1Flag = false;
 
@@ -123,7 +161,8 @@ void bsRadioPoll() {
     radio.finishTransmit();
     bsTxCount++;
     int st = radio.startReceive();
-    bsRadioState = (st == RADIOLIB_ERR_NONE) ? BS_RADIO_RX : BS_RADIO_OFF;
+    if (st == RADIOLIB_ERR_NONE) { bsRadioState = BS_RADIO_RX; ledOnRX(); }
+    else                         { bsRadioState = BS_RADIO_OFF; ledOff(); }
     return;
   }
 
@@ -134,6 +173,7 @@ void bsRadioPoll() {
     bsRxFailCount++;
     radio.startReceive();
     bsRadioState = BS_RADIO_RX;
+    ledOnRX();
     return;
   }
   int st = radio.readData(buf, len);
@@ -142,6 +182,7 @@ void bsRadioPoll() {
 
   radio.startReceive();
   bsRadioState = BS_RADIO_RX;
+  ledOnRX();
 
   if (st == RADIOLIB_ERR_NONE) {
     bsRxCount++;

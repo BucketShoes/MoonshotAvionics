@@ -6,6 +6,11 @@
 #include "globals.h"
 #include "../common/radio_helpers.h"
 
+// LED brightness levels, also used by main.cpp via radioLedOnRX/TX/Off helpers.
+static inline void ledOnTX() { ledcWrite(LED_PIN, 64); }
+static inline void ledOnRX() { ledcWrite(LED_PIN, 5); }
+static inline void ledOff()  { ledcWrite(LED_PIN, 0); }
+
 // ===================== HARDWARE / GLOBALS =====================
 
 SPIClass    loraSPI(FSPI);
@@ -66,6 +71,7 @@ bool radioInit() {
 
   loraReady  = true;
   radioState = RADIO_RX;
+  ledOnRX();
   return true;
 }
 
@@ -85,10 +91,28 @@ void radioApplyConfig() {
 
   dio1Flag = false;
   int st = radio.startReceive();
-  radioState = (st == RADIOLIB_ERR_NONE) ? RADIO_RX : RADIO_OFF;
+  if (st == RADIOLIB_ERR_NONE) { radioState = RADIO_RX; ledOnRX(); }
+  else                         { radioState = RADIO_OFF; ledOff(); }
+}
+
+// ===================== RX-BUSY CHECK =====================
+// Returns true if the SX1262 currently has preamble or header sync on an
+// incoming packet. Used by the TX scheduler to defer so we don't clobber
+// an in-flight reception with our own transmit.
+
+bool radioRxBusy() {
+  if (!loraReady) return false;
+  if (radioState != RADIO_RX) return false;
+  uint32_t irq = radio.getIrqFlags();
+  return (irq & (RADIOLIB_SX126X_IRQ_PREAMBLE_DETECTED |
+                 RADIOLIB_SX126X_IRQ_SYNC_WORD_VALID |
+                 RADIOLIB_SX126X_IRQ_HEADER_VALID)) != 0;
 }
 
 // ===================== TX =====================
+
+static unsigned long txStartedMs = 0;
+#define RADIO_TX_WATCHDOG_MS  1500   // longer than any sane airtime; recovers wedged TX
 
 bool radioStartTransmit(const uint8_t* pkt, size_t len) {
   if (!loraReady) return false;
@@ -101,9 +125,12 @@ bool radioStartTransmit(const uint8_t* pkt, size_t len) {
     txFailCount++;
     radio.startReceive();
     radioState = RADIO_RX;
+    ledOnRX();
     return false;
   }
   radioState = RADIO_TX;
+  txStartedMs = millis();
+  ledOnTX();
   return true;
 }
 
@@ -111,6 +138,19 @@ bool radioStartTransmit(const uint8_t* pkt, size_t len) {
 
 void radioPoll() {
   if (!loraReady) return;
+
+  // TX watchdog — recover from missed TxDone IRQ (wedged radio).
+  if (radioState == RADIO_TX && (millis() - txStartedMs) > RADIO_TX_WATCHDOG_MS) {
+    Serial.println("radio: TX watchdog fired — forcing standby+RX");
+    txFailCount++;
+    radio.standby();
+    dio1Flag = false;
+    int st = radio.startReceive();
+    if (st == RADIOLIB_ERR_NONE) { radioState = RADIO_RX; ledOnRX(); }
+    else                         { radioState = RADIO_OFF; ledOff(); }
+    return;
+  }
+
   if (!dio1Flag) return;
   dio1Flag = false;
 
@@ -118,7 +158,8 @@ void radioPoll() {
     radio.finishTransmit();
     txCount++;
     int st = radio.startReceive();
-    radioState = (st == RADIOLIB_ERR_NONE) ? RADIO_RX : RADIO_OFF;
+    if (st == RADIOLIB_ERR_NONE) { radioState = RADIO_RX; ledOnRX(); }
+    else                         { radioState = RADIO_OFF; ledOff(); }
     return;
   }
 
@@ -129,6 +170,7 @@ void radioPoll() {
     rxFailCount++;
     radio.startReceive();
     radioState = RADIO_RX;
+    ledOnRX();
     return;
   }
   int st = radio.readData(buf, len);
@@ -138,6 +180,7 @@ void radioPoll() {
   // Re-arm RX before processing so we don't miss the next packet.
   radio.startReceive();
   radioState = RADIO_RX;
+  ledOnRX();
 
   if (st == RADIOLIB_ERR_NONE) {
     rxCount++;

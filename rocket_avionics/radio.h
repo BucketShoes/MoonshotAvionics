@@ -69,6 +69,10 @@ void radioApplyConfig();
 // On true: state becomes RADIO_TX; radioPoll() flips back to RADIO_RX on TxDone IRQ.
 bool radioStartTransmit(const uint8_t* pkt, size_t len);
 
+// True if the radio currently has preamble or header sync on an incoming packet
+// — i.e. a TX would clobber an in-flight reception. Cheap (~50µs SPI read).
+bool radioRxBusy();
+
 // Pump the radio state machine: read RX packets, handle TxDone, restart RX.
 // Call every loop iteration. Worst-case ~1 ms (SPI read of one packet).
 void radioPoll();

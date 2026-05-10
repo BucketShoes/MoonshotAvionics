@@ -405,13 +405,27 @@ size_t bsBuildPingCmdPacket(uint8_t* buf) {
 }
 
 // ===================== CMD TX DISPATCH =====================
-// Called from loop() once per queued command (with optional `sends` retries
-// spaced by `lastSendMs`). No slot machine — TX immediately when the radio is
-// idle, retry next loop if it isn't.
+// First send waits for the post-RxDone window (cleanest air just opened) or
+// for `waitMs` since queueing to elapse, whichever comes first. Subsequent
+// sends in a burst (sends>1, used when struggling to find the rocket's RX
+// window) blast back-to-back with no further waiting.
+
+#define BS_POST_RX_WINDOW_MS  30   // open a TX window for this long after each telem RxDone
 
 static void dispatchCmdTx() {
   if (!cmdTx.active || cmdTx.sent >= cmdTx.sends) return;
   if (bsRadioState != BS_RADIO_RX) return;       // radio busy, retry next loop
+  if (bsRadioRxBusy()) return;                   // packet currently arriving
+
+  // Gate the FIRST send on post-RX window or waitMs expiry. Retries blast.
+  if (cmdTx.sent == 0) {
+    unsigned long now = millis();
+    bool inPostRxWindow = (bsLastTelemRxMs != 0) &&
+                          ((now - bsLastTelemRxMs) <= BS_POST_RX_WINDOW_MS);
+    bool waitExpired    = (cmdTx.waitMs == 0) ||
+                          ((now - cmdTx.queuedMs) >= cmdTx.waitMs);
+    if (!inPostRxWindow && !waitExpired) return;
+  }
 
   Serial.print("CMD TX "); Serial.print(cmdTx.sent + 1);
   Serial.print("/"); Serial.print(cmdTx.sends);

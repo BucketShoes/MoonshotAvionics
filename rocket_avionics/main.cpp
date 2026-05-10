@@ -224,8 +224,7 @@ void nonblockingInit() {
 
       txSendingEnabled = true;
       if (loraReady) {
-        ledcWrite(LED_PIN, 64);
-        radioApplyConfig();   // push NVS-loaded config to chip and re-arm RX
+        radioApplyConfig();   // pushes NVS-loaded config to chip, re-arms RX, sets LED
         Serial.println("Radio enabled");
       } else {
         Serial.println("Radio FAILED — no LoRa");
@@ -274,10 +273,24 @@ void nonblockingButton() {
     if (raw != btnStableState) {
       btnStableState = raw;
       if (!btnStableState) {
-        txSendingEnabled = !txSendingEnabled;
-        ledcWrite(LED_PIN, txSendingEnabled ? 256 : 0);
-        Serial.print("TX sending: ");
-        Serial.println(txSendingEnabled ? "ON" : "OFF");
+        // Toggle between "off" (rate=0) and a sane default (1 Hz). If the user
+        // wants a different rate they can set it via CMD_SET_TX_RATE; the button
+        // just gives them a quick "shut up / start talking again" handle and
+        // also forces the radio back into a known RX state in case it was wedged.
+        static int8_t savedRate = 0;
+        if (activeTxRate != 0) {
+          savedRate = activeTxRate;
+          activeTxRate = 0;
+        } else {
+          activeTxRate = (savedRate != 0) ? savedRate : 1;
+        }
+        txIntervalUs = txRateToIntervalUs(activeTxRate);
+        txSendingEnabled = (activeTxRate != 0);
+        nvs.putChar("tx_rate", activeTxRate);
+        // Force a fresh RX arm so the radio can't be stuck in mid-TX wedge.
+        radioApplyConfig();
+        Serial.print("TX rate (button): "); Serial.print(activeTxRate);
+        Serial.print(" -> "); Serial.print(txIntervalUs); Serial.println("us");
       }
     }
   }
@@ -358,8 +371,10 @@ void nonblockingTelemTx() {
   unsigned long now = micros();
   if ((long)(now - nextTelemUs) < 0) return;
 
-  // Don't try to start TX if RX is not idle (mid-receive). Re-check next loop.
+  // Don't try to start TX if RX is not idle, or if a packet is currently
+  // arriving (preamble/header sync). Either case: clobbers reception.
   if (radioState != RADIO_RX) return;
+  if (radioRxBusy()) return;
 
   uint8_t pkt[256];
   size_t len = buildTelemetryPacket(pkt);
