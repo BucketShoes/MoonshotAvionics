@@ -297,6 +297,8 @@ bool queueCommandTx(const uint8_t* body, size_t bodyLen, String& errorMsg) {
   }
   if (sends == 0 || sends > 20) sends = 1;
 
+
+  //TODO: @@@ is this putting the command in a place the sending would see it before checking the nonce? and also not setting the length until later? so a real c9ommand woudl be overwritten by an unverified command, possibly with buffer overrun? do any flags, etc stop dispatch looking at cmdTx.pkt?
   memcpy(cmdTx.pkt, body + 4, pktLen);
 
   if (!verifyCommandHMAC(cmdTx.pkt, pktLen)) {
@@ -410,20 +412,32 @@ size_t bsBuildPingCmdPacket(uint8_t* buf) {
 // sends in a burst (sends>1, used when struggling to find the rocket's RX
 // window) blast back-to-back with no further waiting.
 
-#define BS_POST_RX_WINDOW_MS  30   // open a TX window for this long after each telem RxDone
+#define BS_POST_RX_WINDOW_MS  30      // open a TX window for this long after each telem RxDone
+#define BS_TX_OVERRUN_MS      2000    // after this long blocked by busy RX, force through
 
 static void dispatchCmdTx() {
   if (!cmdTx.active || cmdTx.sent >= cmdTx.sends) return;
-  if (bsRadioState != BS_RADIO_RX) return;       // radio busy, retry next loop
-  if (bsRadioRxBusy()) return;                   // packet currently arriving
+  if (bsRadioState != BS_RADIO_RX) return;       // radio mid-readData / TX in flight
+
+  unsigned long now = millis();
+  unsigned long age = now - cmdTx.queuedMs;
+
+  // Reception-preserving: defer if a packet is currently arriving. But after
+  // BS_TX_OVERRUN_MS past queue time, force through — someone may be on a
+  // long continuous transmission and we'd never get on air.
+  bool rxBusy  = bsRadioRxBusy();
+  bool overrun = (age > BS_TX_OVERRUN_MS);
+  if (rxBusy && !overrun) return;
+  if (rxBusy && overrun) {
+    Serial.println("CMD TX: overrun, forcing through busy RX");
+  }
 
   // Gate the FIRST send on post-RX window or waitMs expiry. Retries blast.
-  if (cmdTx.sent == 0) {
-    unsigned long now = millis();
+  if (cmdTx.sent == 0 && !overrun) {
     bool inPostRxWindow = (bsLastTelemRxMs != 0) &&
                           ((now - bsLastTelemRxMs) <= BS_POST_RX_WINDOW_MS);
     bool waitExpired    = (cmdTx.waitMs == 0) ||
-                          ((now - cmdTx.queuedMs) >= cmdTx.waitMs);
+                          (age >= cmdTx.waitMs);
     if (!inPostRxWindow && !waitExpired) return;
   }
 
@@ -431,7 +445,7 @@ static void dispatchCmdTx() {
   Serial.print("/"); Serial.print(cmdTx.sends);
   Serial.print(" len="); Serial.println(cmdTx.pktLen);
 
-  if (!bsRadioStartTx(cmdTx.pkt, cmdTx.pktLen)) {
+  if (!bsRadioStartTx(cmdTx.pkt, cmdTx.pktLen, /*forceThroughBusy=*/overrun)) {
     Serial.println("CMD TX start fail — retry next loop");
     return;
   }

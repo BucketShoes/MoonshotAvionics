@@ -65,9 +65,17 @@ bool radioInit();
 // Safe to call any time the radio is not mid-TX. Re-arms RX after applying.
 void radioApplyConfig();
 
+// How long past the intended telem TX time to wait for a busy RX to clear
+// before forcing through. Catches a stuck-on transmitter that would otherwise
+// starve telem indefinitely.
+#define RADIO_TX_OVERRUN_US  1'000'000UL
+
 // Try to transmit a packet. Returns true if TX started, false if busy/error.
 // On true: state becomes RADIO_TX; radioPoll() flips back to RADIO_RX on TxDone IRQ.
-bool radioStartTransmit(const uint8_t* pkt, size_t len);
+// forceThroughBusy=true skips the reception-preserving busy check (used when
+// telem is overdue past RADIO_TX_OVERRUN_US — we'd rather clobber a long RX
+// than miss telem entirely).
+bool radioStartTransmit(const uint8_t* pkt, size_t len, bool forceThroughBusy = false);
 
 // True if the radio currently has preamble or header sync on an incoming packet
 // — i.e. a TX would clobber an in-flight reception. Cheap (~50µs SPI read).

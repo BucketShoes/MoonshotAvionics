@@ -62,7 +62,9 @@ void bsRadioApplyConfig();
 
 // Try to TX a packet. Returns true on success; state becomes BS_RADIO_TX
 // and bsRadioPoll() flips back to BS_RADIO_RX on TxDone IRQ.
-bool bsRadioStartTx(const uint8_t* pkt, size_t len);
+// forceThroughBusy=true skips the reception-preserving busy check (used
+// when caller has decided telem is too overdue to keep waiting).
+bool bsRadioStartTx(const uint8_t* pkt, size_t len, bool forceThroughBusy = false);
 
 // True if radio currently has preamble/header sync on an incoming packet.
 bool bsRadioRxBusy();

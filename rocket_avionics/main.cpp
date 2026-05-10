@@ -371,15 +371,24 @@ void nonblockingTelemTx() {
   unsigned long now = micros();
   if ((long)(now - nextTelemUs) < 0) return;
 
-  // Don't try to start TX if RX is not idle, or if a packet is currently
-  // arriving (preamble/header sync). Either case: clobbers reception.
+  // Don't try to start TX if RX is not idle (mid-readData / TX in flight).
   if (radioState != RADIO_RX) return;
-  if (radioRxBusy()) return;
+
+  // Reception-preserving: defer if a packet is currently arriving (preamble/
+  // sync/header detected). But if we're more than RADIO_TX_OVERRUN_US past the
+  // intended TX time, give up waiting — someone may be transmitting continuously
+  // and we'd otherwise never get on air.
+  bool rxBusy = radioRxBusy();
+  bool overrun = ((long)(now - nextTelemUs) > (long)RADIO_TX_OVERRUN_US);
+  if (rxBusy && !overrun) return;
+  if (rxBusy && overrun) {
+    Serial.println("radio: TX overrun, forcing through busy RX");
+  }
 
   uint8_t pkt[256];
   size_t len = buildTelemetryPacket(pkt);
   if (len == 0) return;
-  if (radioStartTransmit(pkt, len)) {
+  if (radioStartTransmit(pkt, len, /*forceThroughBusy=*/overrun)) {
     nextTelemUs = now + txIntervalUs;
   }
 }

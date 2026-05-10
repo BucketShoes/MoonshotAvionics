@@ -116,13 +116,14 @@ bool bsRadioRxBusy() {
 static unsigned long bsTxStartedMs = 0;
 #define BS_TX_WATCHDOG_MS  1500   // longer than any sane airtime; recovers wedged TX
 
-bool bsRadioStartTx(const uint8_t* pkt, size_t len) {
+bool bsRadioStartTx(const uint8_t* pkt, size_t len, bool forceThroughBusy) {
   if (!bsLoraReady) return false;
   if (bsRadioState == BS_RADIO_TX) return false;
 
   // Atomic with the standby below: if a packet is currently arriving (latched
   // PREAMBLE/SYNC/HEADER IRQ flag), do NOT standby — that would abort the RX.
-  if (bsRadioRxBusy()) return false;
+  // Skipped when forceThroughBusy is set (caller has decided to give up).
+  if (!forceThroughBusy && bsRadioRxBusy()) return false;
 
   radio.standby();
   dio1Flag = false;
