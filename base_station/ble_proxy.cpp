@@ -62,19 +62,6 @@ static PendingNotify pxTelemPending = {};
 static PendingNotify pxFetchPending = {};
 static PendingNotify pxOtaPending   = {};
 
-static void notifyPhone(NimBLECharacteristic* chr, PendingNotify& pn,
-                        const uint8_t* data, size_t len) {
-    if (!phoneConnected || !chr) return;
-    size_t capped = len > sizeof(pn.buf) ? sizeof(pn.buf) : len;
-    bool ok = chr->notify(data, capped);
-    if (!ok) {
-        Serial.println("[PROXY] notify dropped — holding for retry");
-        memcpy(pn.buf, data, capped);
-        pn.len = (uint16_t)capped;
-        pn.pending = true;
-    }
-}
-
 static bool retryPending(NimBLECharacteristic* chr, PendingNotify& pn) {
     if (!pn.pending) return true;
     if (!phoneConnected || !chr) { pn.pending = false; return true; }
@@ -85,17 +72,31 @@ static bool retryPending(NimBLECharacteristic* chr, PendingNotify& pn) {
 
 // ===================== ROCKET NOTIFY CALLBACKS =====================
 
+// Notification callbacks fire on the NimBLE stack task — do NOT call notify()
+// here, it re-enters the mbuf pool while the stack is still using it for the
+// incoming packet and exhausts the buffer pool immediately.  Just queue into
+// the pending buffer; bleProxyLoop() (Arduino task) drains it.
+
 static void onRocketTelem(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
     Serial.printf("[PROXY] telem rx %uB phone=%d\n", (unsigned)len, (int)phoneConnected);
-    notifyPhone(pxTelemChar, pxTelemPending, data, len);
+    size_t capped = len > sizeof(pxTelemPending.buf) ? sizeof(pxTelemPending.buf) : len;
+    memcpy(pxTelemPending.buf, data, capped);
+    pxTelemPending.len = (uint16_t)capped;
+    pxTelemPending.pending = true;
 }
 
 static void onRocketFetch(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
-    notifyPhone(pxFetchChar, pxFetchPending, data, len);
+    size_t capped = len > sizeof(pxFetchPending.buf) ? sizeof(pxFetchPending.buf) : len;
+    memcpy(pxFetchPending.buf, data, capped);
+    pxFetchPending.len = (uint16_t)capped;
+    pxFetchPending.pending = true;
 }
 
 static void onRocketOta(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
-    notifyPhone(pxOtaChar, pxOtaPending, data, len);
+    size_t capped = len > sizeof(pxOtaPending.buf) ? sizeof(pxOtaPending.buf) : len;
+    memcpy(pxOtaPending.buf, data, capped);
+    pxOtaPending.len = (uint16_t)capped;
+    pxOtaPending.pending = true;
 }
 
 // ===================== PHONE → ROCKET WRITE FORWARDING =====================
