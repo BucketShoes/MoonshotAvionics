@@ -598,7 +598,8 @@ size_t buildStatusJson(char* json, size_t maxLen) {
   return snprintf(json, maxLen,
     "{\"uptimeMs\":%lu,\"records\":%lu,\"oldest\":%lu,\"ringSize\":%lu,\"vpos\":%lu,"
     "\"logOk\":%s,\"nonce\":%lu,\"deviceId\":%d,\"baseBattMv\":%u,"
-    "\"wifiOn\":%s,\"bleOn\":%s}",
+    "\"wifiOn\":%s,\"bleOn\":%s,\"lrListen\":%s,"
+    "\"radioCh\":%u,\"radioSF\":%u,\"radioPwr\":%d}",
     (unsigned long)millis(),
     (unsigned long)logStore.getRecordCounter(),
     (unsigned long)logStore.getOldestRecord(),
@@ -609,7 +610,11 @@ size_t buildStatusJson(char* json, size_t maxLen) {
     DEVICE_ID,
     (unsigned)baseBattMv,
     wifiEnabled ? "true" : "false",
-    bleEnabled ? "true" : "false");
+    bleEnabled ? "true" : "false",
+    bsRadioInLRListen() ? "true" : "false",
+    (unsigned)activeChannel,
+    (unsigned)activeSF,
+    (int)activePower);
 }
 
 // ===================== HTTP HANDLERS =====================

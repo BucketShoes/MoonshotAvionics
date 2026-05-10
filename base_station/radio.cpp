@@ -244,6 +244,7 @@ void bsRadioPoll() {
 
   if (st == RADIOLIB_ERR_NONE) {
     bsRxCount++;
+    bsLastTelemRxMs = millis();   // any rocket packet (telem or LR) counts as "rocket heard"
     if (bsLRListening) {
       // LR packet: 3 bytes on air with implicit header. Prepend type+devid
       // so the rest of the pipeline sees a 5-byte normal packet.
@@ -253,7 +254,6 @@ void bsRadioPoll() {
       memcpy(lrFrame + 2, buf, (len < LORA_LR_IMPLICIT_LEN) ? len : LORA_LR_IMPLICIT_LEN);
       bsOnPacketReceived(lrFrame, 2 + LORA_LR_IMPLICIT_LEN, snr, rssi);
     } else {
-      if (len >= 1 && buf[0] == PKT_TELEMETRY) bsLastTelemRxMs = millis();
       bsOnPacketReceived(buf, len, snr, rssi);
     }
   } else {
