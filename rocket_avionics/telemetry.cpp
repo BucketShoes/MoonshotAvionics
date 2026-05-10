@@ -490,20 +490,33 @@ size_t buildTelemetryPacket(uint8_t* buf) {
 // 11+11+1 bits packed into 3 bytes. Lat/lon use a coarser frac than the
 // normal telem encoding (0.0005° vs 0.00002°) to fit in 11 bits.
 
+static float lrRandF() {
+  return (float)(esp_random() & 0xFFFFFF) / (float)0x1000000;  // [0, 1)
+}
+
 static uint16_t encodeLRFrac(double degrees, bool valid) {
   if (!valid) return 2001;   // sentinel
   double absDeg = fabs(degrees);
   double frac = absDeg - floor(absDeg);
-  uint32_t steps = (uint32_t)(frac / 0.0005);
+  uint32_t steps = (uint32_t)floor(frac / 0.0005 + lrRandF());
   if (steps > 2000) steps = 2000;
   return (uint16_t)steps;
 }
 
+
 void buildLRPayload(uint8_t buf[LORA_LR_IMPLICIT_LEN]) {
-//TODO: @@@this should be a probability dither, not hard rounded
   uint16_t latFrac = encodeLRFrac(gps.lat, gps.valid);
   uint16_t lonFrac = encodeLRFrac(gps.lon, gps.valid);
-  uint32_t lowBatt = (batteryMv > 0 && batteryMv <= 3400) ? 1 : 0;
+  // Probabilistic low-batt: 1 with probability proportional to depth in [3600, 3200] mV window.
+  // At 3600mV p=0, at 3200mV p=1, below 3200mV always 1.
+  uint32_t lowBatt = 0;
+  if (batteryMv <= 3200) {
+    lowBatt = 1;
+  } else if (batteryMv < 3600) {
+    float p = (float)(3600 - batteryMv) / 400.0f;
+    lowBatt = (lrRandF() < p) ? 1 : 0;
+  }
+  
   uint32_t word = (latFrac & 0x7FF)
                 | ((lonFrac & 0x7FF) << 11)
                 | ((lowBatt & 0x1) << 22);
