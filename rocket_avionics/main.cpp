@@ -141,15 +141,10 @@ void nonblockingInit() {
       break;
 
     case INIT_LORA: {
+      // SPI is set up here so subsequent NVS-loaded radio config can be pushed
+      // to the chip when radioInit() runs in INIT_NVS — radio.begin() opens
+      // the bus too, but doing it explicitly mirrors the base station path.
       loraSPI.begin(LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN, LORA_NSS_PIN);
-      Serial.print("LoRa init... ");
-      updateActiveFreqBw();
-      if (radioInit()) {
-        Serial.println("ok");
-        loraReady = true;
-      } else {
-        Serial.println("FAIL");
-      }
       initState = INIT_NVS;
       break;
     }
@@ -207,13 +202,22 @@ void nonblockingInit() {
         activePower = DEFAULT_POWER;
       }
       updateActiveFreqBw();
-      if (loraReady) {
-        radioApplyConfig();
+
+      // Now that activeChannel/SF/Power are loaded from NVS, init the radio
+      // ONCE with the correct values. radioInit() calls radio.begin() which
+      // configures the chip; no second apply needed, no transient SF on the
+      // wrong settings.
+      Serial.print("LoRa init... ");
+      if (radioInit()) {
+        Serial.println("ok");
+        loraReady = true;
+      } else {
+        Serial.println("FAIL");
       }
       Serial.print("Radio config: ch"); Serial.print(activeChannel);
       Serial.print(" "); Serial.print(activeFreqMHz, 1); Serial.print("MHz SF");
       Serial.print(activeSF); Serial.print(" BW"); Serial.print((int)activeBwKHz);
-      Serial.print(" pwr="); Serial.println(activePower);
+      Serial.print(" pwr"); Serial.print((int)activePower); Serial.println("dB");
 
       // Load TX rate from NVS
       int8_t loadedRate = nvs.isKey("tx_rate") ? nvs.getChar("tx_rate", 0) : 0;
@@ -223,12 +227,7 @@ void nonblockingInit() {
       Serial.print(" -> "); Serial.print(txIntervalUs); Serial.println("us interval");
 
       txSendingEnabled = true;
-      if (loraReady) {
-        radioApplyConfig();   // pushes NVS-loaded config to chip, re-arms RX, sets LED
-        Serial.println("Radio enabled");
-      } else {
-        Serial.println("Radio FAILED — no LoRa");
-      }
+      if (!loraReady) Serial.println("Radio FAILED — no LoRa");
 
       logStoreOk = logStore.begin("log_data", "log_index", "rkt_log");
       Serial.print("LogStore: "); Serial.println(logStoreOk ? "OK" : "FAIL");
@@ -437,6 +436,9 @@ void nonblockingLoopStats() {
     Serial.print("Loop: "); Serial.print((int)((1/hz)*1'000'000)); Serial.print("us (");
     Serial.print((int)hz); Serial.print(" Hz)  Batt: "); Serial.print(batteryMv);
     Serial.print("mV  Sync:"); Serial.print(radioInSync() ? "YES" : "NO");
+    Serial.print("  Radio: ch"); Serial.print(activeChannel);
+    Serial.print("sf"); Serial.print(activeSF);
+    Serial.print(activePower >= 0 ? "+" : ""); Serial.print((int)activePower); Serial.print("dB");
     Serial.print("  TX: "); Serial.print(txCount);
     Serial.print("  RX: "); Serial.print(rxCount);
     Serial.print("  TXfail: "); Serial.print(txFailCount);

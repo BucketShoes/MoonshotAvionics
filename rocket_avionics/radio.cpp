@@ -29,7 +29,7 @@ uint32_t txFailCount    = 0;
 uint32_t rxFailCount    = 0;
 uint16_t delayedTxCount = 0;
 uint16_t invalidRxCount = 0;
-bool     lrBeaconEnabled = false;
+bool     lrBeaconEnabled = true;
 int64_t  lastValidCmdUs = 0;
 
 // ===================== RADIOLIB MODULE =====================
