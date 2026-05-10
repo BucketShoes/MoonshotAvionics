@@ -44,7 +44,10 @@ unsigned long bootMicros = 0;
 #define TRANSPORT_USB   0x04  // reserved for future
 #define TRANSPORT_ALL   (TRANSPORT_WIFI | TRANSPORT_BLE | TRANSPORT_USB)
 
-bool wifiEnabled = true;
+#ifndef BS_WIFI_DEFAULT_ON
+#define BS_WIFI_DEFAULT_ON 0
+#endif
+bool wifiEnabled = BS_WIFI_DEFAULT_ON;
 bool bleEnabled = true;
 
 // ===================== HARDWARE =====================
@@ -975,42 +978,50 @@ void setup() {
   Serial.print(" pwr="); Serial.println(activePower);
   Serial.print("Device ID: "); Serial.println(DEVICE_ID);
 
-  // WiFi AP
-  Serial.println("WiFi: setting mode...");
-  WiFi.mode(WIFI_AP);
-  Serial.println("WiFi: starting softAP...");
-  bool apOk = WiFi.softAP(WIFI_SSID, WIFI_PASS, WIFI_CHANNEL);
-  Serial.print("WiFi: softAP result="); Serial.println(apOk);
-  Serial.print("AP: "); Serial.println(WiFi.softAPIP());
+  // WiFi AP — off by default (BS_WIFI_DEFAULT_ON=0) to reduce BLE coex interference.
+  // Set BS_WIFI_DEFAULT_ON=1 in build_flags to restore for web dashboard use.
+  if (wifiEnabled) {
+    Serial.println("WiFi: setting mode...");
+    WiFi.mode(WIFI_AP);
+    Serial.println("WiFi: starting softAP...");
+    bool apOk = WiFi.softAP(WIFI_SSID, WIFI_PASS, WIFI_CHANNEL);
+    Serial.print("WiFi: softAP result="); Serial.println(apOk);
+    Serial.print("AP: "); Serial.println(WiFi.softAPIP());
+  } else {
+    Serial.println("WiFi: disabled (BS_WIFI_DEFAULT_ON=0)");
+    WiFi.mode(WIFI_OFF);
+  }
 
-  httpServer.on("/", HTTP_GET, [](AsyncWebServerRequest *r){
-    Serial.println("HTTP GET /");
-    AsyncWebServerResponse *resp = r->beginResponse(LittleFS, "/index.html.gz", "text/html");
-    if (!resp) { r->send(503, "text/plain", "LittleFS not mounted"); return; }
-    resp->addHeader("Content-Encoding", "gzip");
-    r->send(resp);
-  });
-  httpServer.on("/style.css", HTTP_GET, [](AsyncWebServerRequest *r){
-    AsyncWebServerResponse *resp = r->beginResponse(LittleFS, "/style.css.gz", "text/css");
-    if (!resp) { r->send(503, "text/plain", "LittleFS not mounted"); return; }
-    resp->addHeader("Content-Encoding", "gzip");
-    r->send(resp);
-  });
-  httpServer.on("/app.js", HTTP_GET, [](AsyncWebServerRequest *r){
-    AsyncWebServerResponse *resp = r->beginResponse(LittleFS, "/app.js.gz", "application/javascript");
-    if (!resp) { r->send(503, "text/plain", "LittleFS not mounted"); return; }
-    resp->addHeader("Content-Encoding", "gzip");
-    r->send(resp);
-  });
-  httpServer.on("/api/status", HTTP_GET, handleApiStatus);
-  httpServer.on("/api/logs", HTTP_GET, handleApiLogs);
-  httpServer.on("/api/command", HTTP_POST,
-    [](AsyncWebServerRequest *req){ }, NULL, handleApiCommand);
-  httpServer.on("/api/ota/chunk", HTTP_PUT,
-    [](AsyncWebServerRequest *req){ }, NULL, handleApiOtaChunk);
-  ws.onEvent(onWsEvent);
-  httpServer.addHandler(&ws);
-  httpServer.begin();
+  if (wifiEnabled) {
+    httpServer.on("/", HTTP_GET, [](AsyncWebServerRequest *r){
+      Serial.println("HTTP GET /");
+      AsyncWebServerResponse *resp = r->beginResponse(LittleFS, "/index.html.gz", "text/html");
+      if (!resp) { r->send(503, "text/plain", "LittleFS not mounted"); return; }
+      resp->addHeader("Content-Encoding", "gzip");
+      r->send(resp);
+    });
+    httpServer.on("/style.css", HTTP_GET, [](AsyncWebServerRequest *r){
+      AsyncWebServerResponse *resp = r->beginResponse(LittleFS, "/style.css.gz", "text/css");
+      if (!resp) { r->send(503, "text/plain", "LittleFS not mounted"); return; }
+      resp->addHeader("Content-Encoding", "gzip");
+      r->send(resp);
+    });
+    httpServer.on("/app.js", HTTP_GET, [](AsyncWebServerRequest *r){
+      AsyncWebServerResponse *resp = r->beginResponse(LittleFS, "/app.js.gz", "application/javascript");
+      if (!resp) { r->send(503, "text/plain", "LittleFS not mounted"); return; }
+      resp->addHeader("Content-Encoding", "gzip");
+      r->send(resp);
+    });
+    httpServer.on("/api/status", HTTP_GET, handleApiStatus);
+    httpServer.on("/api/logs", HTTP_GET, handleApiLogs);
+    httpServer.on("/api/command", HTTP_POST,
+      [](AsyncWebServerRequest *req){ }, NULL, handleApiCommand);
+    httpServer.on("/api/ota/chunk", HTTP_PUT,
+      [](AsyncWebServerRequest *req){ }, NULL, handleApiOtaChunk);
+    ws.onEvent(onWsEvent);
+    httpServer.addHandler(&ws);
+    httpServer.begin();
+  }
 
   // LoRa
   bsLoraSPI.begin(LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN, LORA_NSS_PIN);
@@ -1026,8 +1037,10 @@ void setup() {
   Serial.println("=== Ready ===");
 
   NimBLEDevice::getAdvertising()->setAdvertisingInterval(1600);
-  esp_wifi_set_max_tx_power(20);
-  esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
+  if (wifiEnabled) {
+    esp_wifi_set_max_tx_power(20);
+    esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
+  }
   setCpuFrequencyMhz(160);
 }
 
