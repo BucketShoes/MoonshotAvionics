@@ -902,10 +902,10 @@ void initBLE() {
 
   svc->start();
 
-  // Register the base station service UUID in the advert packet.
-  // bleProxyInit() adds the rocket UUID + device name and calls start().
+  // Advertising is owned by bleProxyInit() — it sets name, UUIDs, and starts it.
+  // The base station service is still connectable; it just won't be in the advert
+  // packet while the proxy is active.
   bleAdvert = NimBLEDevice::getAdvertising();
-  bleAdvert->addServiceUUID(BLE_SERVICE_UUID);
 
   Serial.println("BLE GATT started");
 }

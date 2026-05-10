@@ -21,12 +21,12 @@
 
 // --- Server side (phone connects here) ---
 static NimBLEServer*         pxServer      = nullptr;
-static NimBLECharacteristic* pxTelemChar   = nullptr;  // NOTIFY → phone
-static NimBLECharacteristic* pxCmdChar     = nullptr;  // WRITE ← phone
-static NimBLECharacteristic* pxStatusChar  = nullptr;  // READ  ← phone
-static NimBLECharacteristic* pxConnSetChar = nullptr;  // WRITE ← phone
-static NimBLECharacteristic* pxFetchChar   = nullptr;  // WRITE | NOTIFY ↔ phone
-static NimBLECharacteristic* pxOtaChar     = nullptr;  // WRITE | NOTIFY ↔ phone
+static NimBLECharacteristic* pxTelemChar   = nullptr;
+static NimBLECharacteristic* pxCmdChar     = nullptr;
+static NimBLECharacteristic* pxStatusChar  = nullptr;
+static NimBLECharacteristic* pxConnSetChar = nullptr;
+static NimBLECharacteristic* pxFetchChar   = nullptr;
+static NimBLECharacteristic* pxOtaChar     = nullptr;
 
 static volatile bool phoneConnected = false;
 static uint16_t      phoneConnHandle = PX_INVALID_CONN;
@@ -42,15 +42,16 @@ static NimBLERemoteCharacteristic* rxOtaChar     = nullptr;
 
 static volatile bool rocketConnected = false;
 static volatile bool scanActive      = false;
-static volatile bool connectPending  = false;  // onResult found rocket, connecting
+
+// onResult sets this; bleProxyLoop() does the actual connect outside the callback.
+static NimBLEAddress pendingAddr;
+static volatile bool connectPending  = false;
 
 // Scan retry back-off
-static unsigned long lastScanMs    = 0;
-static unsigned long scanIntervalMs = 5000;  // starts at 5 s, backs off to 30 s
+static unsigned long lastScanMs     = 0;
+static unsigned long scanIntervalMs = 5000;
 
 // ===================== BACKPRESSURE =====================
-// If a phone-side notify() drops, hold payload and retry next loop before
-// consuming the next rocket notification.
 
 struct PendingNotify {
     uint8_t  buf[514];
@@ -81,7 +82,6 @@ static bool retryPending(NimBLECharacteristic* chr, PendingNotify& pn) {
 }
 
 // ===================== ROCKET NOTIFY CALLBACKS =====================
-// Fire on the NimBLE task when the rocket sends a notification.
 
 static void onRocketTelem(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
     notifyPhone(pxTelemChar, pxTelemPending, data, len);
@@ -104,7 +104,7 @@ static void forwardWrite(NimBLERemoteCharacteristic* rxChr,
 }
 
 // ===================== SERVER CONNECT/DISCONNECT =====================
-// Called from the unified BleServerCallbacks in main.cpp.
+// Called from BleServerCallbacks in main.cpp.
 
 void bleProxyOnServerConnect(uint16_t connHandle) {
     phoneConnected  = true;
@@ -133,8 +133,7 @@ class PxCmdCallbacks : public NimBLECharacteristicCallbacks {
             NimBLEAttValue resp = rxCmdChar->getValue();
             chr->setValue(resp.data(), resp.size());
         } else {
-            uint8_t nack = 0xFF;
-            chr->setValue(&nack, 1);
+            uint8_t nack = 0xFF; chr->setValue(&nack, 1);
         }
     }
 };
@@ -155,9 +154,6 @@ class PxConnSetCallbacks : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* chr, NimBLEConnInfo&) override {
         NimBLEAttValue v = chr->getValue();
         forwardWrite(rxConnSetChar, v.data(), v.size(), false);
-        // Rocket receives this and calls updatePhy() on its connection with us.
-        // We accept the incoming PHY update automatically as the central role.
-        // The base↔phone link is unaffected.
     }
 };
 
@@ -179,12 +175,11 @@ class PxOtaCallbacks : public NimBLECharacteristicCallbacks {
 // ===================== CLIENT CALLBACKS =====================
 
 class PxClientCallbacks : public NimBLEClientCallbacks {
-    void onConnect(NimBLEClient* client) override {
-        Serial.println("[PROXY] Rocket BLE connected");
+    void onConnect(NimBLEClient*) override {
+        Serial.println("[PROXY] Rocket BLE transport up");
         scanIntervalMs = 5000;
-        connectPending = false;
     }
-    void onDisconnect(NimBLEClient* client, int reason) override {
+    void onDisconnect(NimBLEClient*, int reason) override {
         rocketConnected = false;
         connectPending  = false;
         rxTelemChar = rxCmdChar = rxStatusChar = nullptr;
@@ -199,61 +194,28 @@ class PxClientCallbacks : public NimBLEClientCallbacks {
 
 class PxScanCallbacks : public NimBLEScanCallbacks {
     void onResult(const NimBLEAdvertisedDevice* adv) override {
-        // Match by name only — prevents base stations connecting to each other
-        // even if they advertise the same service UUID.
-        if (adv->getName() != std::string(ROCKET_DEVICE_NAME)) return;
+        // Filter by service UUID — present in the primary advert payload,
+        // reliable without needing the scan response.  This also prevents
+        // two base stations connecting to each other: base stations advertise
+        // this UUID too, but don't advertise the device name "Moonshot-Rocket",
+        // so a future name-check layer can add that guard once it's reliable.
+        if (!adv->isAdvertisingService(NimBLEUUID(RKT_SVC_UUID))) return;
 
-        Serial.printf("[PROXY] Found rocket: %s  RSSI=%d\n",
-                      adv->getAddress().toString().c_str(), adv->getRSSI());
+        // Ignore ourselves — don't connect to our own advertisement.
+        if (adv->getAddress() == NimBLEDevice::getAddress()) return;
+
+        Serial.printf("[PROXY] Found rocket: %s  RSSI=%d name='%s'\n",
+                      adv->getAddress().toString().c_str(),
+                      adv->getRSSI(),
+                      adv->getName().c_str());
+
+        // Stop the scan and record the address.  Do NOT call connect() here —
+        // we're on the NimBLE stack task, and calling blocking BLE ops from
+        // inside a scan callback causes stack/mutex deadlocks.
         NimBLEDevice::getScan()->stop();
         scanActive     = false;
+        pendingAddr    = adv->getAddress();
         connectPending = true;
-
-        if (!pxClient) {
-            pxClient = NimBLEDevice::createClient();
-            pxClient->setClientCallbacks(new PxClientCallbacks(), true);
-        }
-
-        // EXT_ADV not enabled, so setConnectPhy() isn't available.
-        // Connect on 1M (default); coded PHY negotiated post-connect via ConnSet.
-        if (!pxClient->connect(adv)) {
-            Serial.println("[PROXY] connect() failed");
-            connectPending = false;
-            scanIntervalMs = min(scanIntervalMs * 2, (unsigned long)30000);
-            lastScanMs = millis();
-            return;
-        }
-
-        NimBLERemoteService* svc = pxClient->getService(RKT_SVC_UUID);
-        if (!svc) {
-            Serial.println("[PROXY] rocket service not found");
-            pxClient->disconnect();
-            return;
-        }
-
-        rxTelemChar   = svc->getCharacteristic(RKT_TELEM_UUID);
-        rxCmdChar     = svc->getCharacteristic(RKT_CMD_UUID);
-        rxStatusChar  = svc->getCharacteristic(RKT_STATUS_UUID);
-        rxConnSetChar = svc->getCharacteristic(RKT_CONNSET_UUID);
-        rxFetchChar   = svc->getCharacteristic(RKT_LOGFETCH_UUID);
-        rxOtaChar     = svc->getCharacteristic(RKT_OTA_UUID);
-
-        if (!rxTelemChar || !rxCmdChar || !rxStatusChar) {
-            Serial.println("[PROXY] missing required rocket chars");
-            pxClient->disconnect();
-            return;
-        }
-
-        if (!rxTelemChar->subscribe(true, onRocketTelem)) {
-            Serial.println("[PROXY] telem subscribe failed");
-            pxClient->disconnect();
-            return;
-        }
-        if (rxFetchChar) rxFetchChar->subscribe(true, onRocketFetch);
-        if (rxOtaChar)   rxOtaChar->subscribe(true, onRocketOta);
-
-        rocketConnected = true;
-        Serial.println("[PROXY] Rocket proxy active");
     }
 
     void onScanEnd(const NimBLEScanResults&, int reason) override {
@@ -262,10 +224,60 @@ class PxScanCallbacks : public NimBLEScanCallbacks {
     }
 };
 
+// ===================== CONNECT + SERVICE DISCOVERY =====================
+// Called from bleProxyLoop() on the Arduino main task, not from a BLE callback.
+
+static void doConnect() {
+    connectPending = false;
+
+    if (!pxClient) {
+        pxClient = NimBLEDevice::createClient();
+        pxClient->setClientCallbacks(new PxClientCallbacks(), true);
+    }
+
+    Serial.printf("[PROXY] Connecting to %s...\n", pendingAddr.toString().c_str());
+    if (!pxClient->connect(pendingAddr)) {
+        Serial.println("[PROXY] connect() failed");
+        scanIntervalMs = min(scanIntervalMs * 2, (unsigned long)30000);
+        lastScanMs = millis();
+        return;
+    }
+
+    NimBLERemoteService* svc = pxClient->getService(RKT_SVC_UUID);
+    if (!svc) {
+        Serial.println("[PROXY] rocket service not found — wrong device?");
+        pxClient->disconnect();
+        return;
+    }
+
+    rxTelemChar   = svc->getCharacteristic(RKT_TELEM_UUID);
+    rxCmdChar     = svc->getCharacteristic(RKT_CMD_UUID);
+    rxStatusChar  = svc->getCharacteristic(RKT_STATUS_UUID);
+    rxConnSetChar = svc->getCharacteristic(RKT_CONNSET_UUID);
+    rxFetchChar   = svc->getCharacteristic(RKT_LOGFETCH_UUID);
+    rxOtaChar     = svc->getCharacteristic(RKT_OTA_UUID);
+
+    if (!rxTelemChar || !rxCmdChar || !rxStatusChar) {
+        Serial.println("[PROXY] missing required rocket chars");
+        pxClient->disconnect();
+        return;
+    }
+
+    if (!rxTelemChar->subscribe(true, onRocketTelem)) {
+        Serial.println("[PROXY] telem subscribe failed");
+        pxClient->disconnect();
+        return;
+    }
+    if (rxFetchChar) rxFetchChar->subscribe(true, onRocketFetch);
+    if (rxOtaChar)   rxOtaChar->subscribe(true, onRocketOta);
+
+    rocketConnected = true;
+    Serial.println("[PROXY] Rocket proxy active");
+}
+
 // ===================== PUBLIC API =====================
 
 void bleProxyInit() {
-    // Add proxy service to the existing shared NimBLE server (created by initBLE()).
     pxServer = NimBLEDevice::getServer();
     if (!pxServer) pxServer = NimBLEDevice::createServer();
 
@@ -283,25 +295,20 @@ void bleProxyInit() {
     pxFetchChar->setCallbacks(new PxFetchCallbacks());
     pxOtaChar->setCallbacks(new PxOtaCallbacks());
 
-    // Advertising: both service UUIDs + rocket device name.
-    // NimBLEDevice::init() sets the GAP device name from the string passed to it
-    // (which is WIFI_SSID in initBLE()).  Override it here so scan responses show
-    // the correct name.  This is the name the phone and nRF Connect see.
+    // Override the GAP device name set by NimBLEDevice::init(WIFI_SSID) in initBLE().
     NimBLEDevice::setDeviceName(ROCKET_DEVICE_NAME);
 
     NimBLEAdvertising* advert = NimBLEDevice::getAdvertising();
     advert->addServiceUUID(RKT_SVC_UUID);
-    // Base station service UUID is already added by initBLE() — both appear in advert.
     advert->setName(ROCKET_DEVICE_NAME);
     advert->enableScanResponse(true);
     advert->setMinInterval(0x20);
     advert->setMaxInterval(0x40);
     advert->start();
 
-    // Scan config — 1M PHY only (CONFIG_BT_NIMBLE_EXT_ADV not set).
     NimBLEScan* scan = NimBLEDevice::getScan();
     scan->setScanCallbacks(new PxScanCallbacks(), false);
-    scan->setActiveScan(true);  // active so we get the scan response with the device name
+    scan->setActiveScan(true);
     scan->setInterval(200);
     scan->setWindow(50);
 
@@ -313,13 +320,18 @@ void bleProxyLoop() {
     retryPending(pxFetchChar, pxFetchPending);
     retryPending(pxOtaChar,   pxOtaPending);
 
-    if (!rocketConnected && !scanActive && !connectPending) {
+    if (connectPending) {
+        doConnect();
+        return;
+    }
+
+    if (!rocketConnected && !scanActive) {
         unsigned long now = millis();
         if (now - lastScanMs >= scanIntervalMs) {
             lastScanMs = now;
             scanActive = true;
             Serial.println("[PROXY] Scanning for rocket...");
-            NimBLEDevice::getScan()->start(10, false);  // 10 s scan, non-blocking
+            NimBLEDevice::getScan()->start(20, false);
         }
     }
 }
