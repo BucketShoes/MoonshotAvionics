@@ -49,7 +49,7 @@ static volatile bool connectPending  = false;
 
 // Scan retry back-off
 static unsigned long lastScanMs     = 0;
-static unsigned long scanIntervalMs = 5000;
+static unsigned long scanIntervalMs = 2000;  // 2s gap between scan attempts
 
 // ===================== BACKPRESSURE =====================
 
@@ -177,7 +177,7 @@ class PxOtaCallbacks : public NimBLECharacteristicCallbacks {
 class PxClientCallbacks : public NimBLEClientCallbacks {
     void onConnect(NimBLEClient*) override {
         Serial.println("[PROXY] Rocket BLE transport up");
-        scanIntervalMs = 5000;
+        scanIntervalMs = 2000;
     }
     void onDisconnect(NimBLEClient*, int reason) override {
         rocketConnected = false;
@@ -194,24 +194,25 @@ class PxClientCallbacks : public NimBLEClientCallbacks {
 
 class PxScanCallbacks : public NimBLEScanCallbacks {
     void onResult(const NimBLEAdvertisedDevice* adv) override {
-        // Filter by service UUID — present in the primary advert payload,
-        // reliable without needing the scan response.  This also prevents
-        // two base stations connecting to each other: base stations advertise
-        // this UUID too, but don't advertise the device name "Moonshot-Rocket",
-        // so a future name-check layer can add that guard once it's reliable.
+        std::string advAddr = adv->getAddress().toString();
+        std::string ownAddr = NimBLEDevice::getAddress().toString();
+
+        // Always log what we see so we can diagnose what's on air.
+        Serial.printf("[PROXY] adv: %s rssi=%d name='%s' svc_match=%d self=%d\n",
+                      advAddr.c_str(), adv->getRSSI(), adv->getName().c_str(),
+                      (int)adv->isAdvertisingService(NimBLEUUID(RKT_SVC_UUID)),
+                      (int)(advAddr == ownAddr));
+
+        // Skip our own advertisement (base station advertises the rocket UUID too).
+        // Compare as strings — address type differences can break operator==.
+        if (advAddr == ownAddr) return;
+
         if (!adv->isAdvertisingService(NimBLEUUID(RKT_SVC_UUID))) return;
 
-        // Ignore ourselves — don't connect to our own advertisement.
-        if (adv->getAddress() == NimBLEDevice::getAddress()) return;
+        Serial.printf("[PROXY] Found rocket candidate: %s  RSSI=%d\n",
+                      advAddr.c_str(), adv->getRSSI());
 
-        Serial.printf("[PROXY] Found rocket: %s  RSSI=%d name='%s'\n",
-                      adv->getAddress().toString().c_str(),
-                      adv->getRSSI(),
-                      adv->getName().c_str());
-
-        // Stop the scan and record the address.  Do NOT call connect() here —
-        // we're on the NimBLE stack task, and calling blocking BLE ops from
-        // inside a scan callback causes stack/mutex deadlocks.
+        // Record address for doConnect() — do NOT call connect() here (BLE stack task).
         NimBLEDevice::getScan()->stop();
         scanActive     = false;
         pendingAddr    = adv->getAddress();
@@ -307,10 +308,16 @@ void bleProxyInit() {
     advert->start();
 
     NimBLEScan* scan = NimBLEDevice::getScan();
-    scan->setScanCallbacks(new PxScanCallbacks(), false);
+    // wantDuplicates=true: keep firing onResult throughout the scan duration,
+    // not just on the first seen device.  Needed so we see the rocket even if
+    // we see something else (our own advert) first.
+    scan->setScanCallbacks(new PxScanCallbacks(), true);
     scan->setActiveScan(true);
-    scan->setInterval(200);
-    scan->setWindow(50);
+    // interval=160ms, window=80ms (50% duty) — leaves gaps for WiFi beacon coex.
+    // 100% duty actually performs worse: the controller constantly interrupts the
+    // scan window for WiFi beacons instead of fitting them in the gaps cleanly.
+    scan->setInterval(160);
+    scan->setWindow(80);
 
     Serial.println("[PROXY] BLE proxy init done");
 }
@@ -331,7 +338,7 @@ void bleProxyLoop() {
             lastScanMs = now;
             scanActive = true;
             Serial.println("[PROXY] Scanning for rocket...");
-            NimBLEDevice::getScan()->start(20, false);
+            NimBLEDevice::getScan()->start(10, false);
         }
     }
 }
