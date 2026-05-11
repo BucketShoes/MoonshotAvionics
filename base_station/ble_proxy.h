@@ -35,3 +35,7 @@ bool bleProxyPhoneConnected();
 // track phone connect/disconnect without owning the server callbacks slot.
 void bleProxyOnServerConnect(uint16_t connHandle);
 void bleProxyOnServerDisconnect(uint16_t connHandle);
+
+// LED pin — proxy takes over LED when active.
+// Set before calling bleProxyInit(). -1 = no LED.
+extern int bleProxyLedPin;

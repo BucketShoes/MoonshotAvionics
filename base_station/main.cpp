@@ -959,6 +959,7 @@ void setup() {
   Serial.println("\n=== Rocket Base Station ===");
 
   initBLE();
+  bleProxyLedPin = LED_PIN;
   bleProxyInit();
 
   ledcAttach(LED_PIN, 1000, 11);

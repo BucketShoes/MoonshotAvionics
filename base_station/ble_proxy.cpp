@@ -14,19 +14,45 @@
 #define RKT_LOGFETCH_UUID  "524f434b-4554-5354-424c-000000000005"  // WRITE | NOTIFY
 #define RKT_OTA_UUID       "524f434b-4554-5354-424c-000000000006"  // WRITE | WRITE_NR | NOTIFY
 
-#define ROCKET_DEVICE_NAME "Moonshot-Rocket"
-#define PX_INVALID_CONN    0xFFFF
+#define ROCKET_DEVICE_NAME  "Moonshot-Rocket"
+#define PX_INVALID_CONN     0xFFFF
+// Proxy-only info char — UUID outside the rocket's 0001-0006 range.
+// JS can detect this char to know it's talking to a proxy, not the rocket directly.
+// Notifies a JSON blob: {"rssi":-55,"rocket":1,"phone":1}
+#define RKT_PROXY_INFO_UUID "524f434b-4554-5354-424c-0000000000ff"
+
+int bleProxyLedPin = -1;
+
+// LED brightness levels (11-bit PWM, 0-2047)
+#define LED_TELEM_FLASH  2047   // brief full-brightness flash on telem rx
+#define LED_CONNECTED     200   // dim steady: rocket connected, no recent telem
+#define LED_OFF             0   // scanning / disconnected
+
+static unsigned long ledFlashUntilMs = 0;
+
+static void proxyLedUpdate() {
+    if (bleProxyLedPin < 0) return;
+    unsigned long now = millis();
+    if (now < ledFlashUntilMs) {
+        ledcWrite(bleProxyLedPin, LED_TELEM_FLASH);
+    } else if (rocketConnected) {
+        ledcWrite(bleProxyLedPin, LED_CONNECTED);
+    } else {
+        ledcWrite(bleProxyLedPin, LED_OFF);
+    }
+}
 
 // ===================== STATE =====================
 
 // --- Server side (phone connects here) ---
 static NimBLEServer*         pxServer      = nullptr;
-static NimBLECharacteristic* pxTelemChar   = nullptr;
-static NimBLECharacteristic* pxCmdChar     = nullptr;
-static NimBLECharacteristic* pxStatusChar  = nullptr;
-static NimBLECharacteristic* pxConnSetChar = nullptr;
-static NimBLECharacteristic* pxFetchChar   = nullptr;
-static NimBLECharacteristic* pxOtaChar     = nullptr;
+static NimBLECharacteristic* pxTelemChar     = nullptr;
+static NimBLECharacteristic* pxCmdChar       = nullptr;
+static NimBLECharacteristic* pxStatusChar    = nullptr;
+static NimBLECharacteristic* pxConnSetChar   = nullptr;
+static NimBLECharacteristic* pxFetchChar     = nullptr;
+static NimBLECharacteristic* pxOtaChar       = nullptr;
+static NimBLECharacteristic* pxProxyInfoChar = nullptr;
 
 static volatile bool phoneConnected  = false;
 static uint16_t      phoneConnHandle = PX_INVALID_CONN;
@@ -117,12 +143,14 @@ static void drainWrite(NimBLERemoteCharacteristic* rxChr, PendingWrite& pw, cons
 // Called on NimBLE stack task — copy only, never notify().
 
 static void onRocketTelem(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
-    int rssi = pxClient ? pxClient->getRssi() : 0;
-    Serial.printf("[PROXY] telem rx %uB phone=%d rssi=%d\n", (unsigned)len, (int)phoneConnected, rssi);
+    // Callback runs on NimBLE task — only copy data and set flags, no BLE calls.
     size_t capped = len > sizeof(pxTelemPending.buf) ? sizeof(pxTelemPending.buf) : len;
     memcpy(pxTelemPending.buf, data, capped);
     pxTelemPending.len     = (uint16_t)capped;
     pxTelemPending.pending = true;
+    // LED flash — safe to call ledcWrite from any task.
+    ledFlashUntilMs = millis() + 80;
+    if (bleProxyLedPin >= 0) ledcWrite(bleProxyLedPin, LED_TELEM_FLASH);
 }
 
 static void onRocketFetch(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
@@ -343,6 +371,9 @@ void bleProxyInit() {
     pxFetchChar   = svc->createCharacteristic(RKT_LOGFETCH_UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY);
     pxOtaChar     = svc->createCharacteristic(RKT_OTA_UUID,      NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY);
 
+    pxProxyInfoChar = svc->createCharacteristic(RKT_PROXY_INFO_UUID,
+                         NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+
     pxCmdChar->setCallbacks(new PxCmdCallbacks());
     pxStatusChar->setCallbacks(new PxStatusCallbacks());
     pxConnSetChar->setCallbacks(new PxConnSetCallbacks());
@@ -385,7 +416,11 @@ void bleProxyLoop() {
         return;
     }
 
-    // Periodically refresh status cache from rocket — on Arduino task, never from a callback.
+    // Update LED state every loop (handles flash expiry).
+    proxyLedUpdate();
+
+    // Periodically refresh status cache + proxy info char from rocket.
+    // Both run on Arduino task — never from a BLE callback.
     if (rocketConnected && rxStatusChar) {
         unsigned long now = millis();
         if (now - statusLastFetchMs >= STATUS_CACHE_INTERVAL_MS) {
@@ -396,6 +431,17 @@ void bleProxyLoop() {
                 memcpy(statusCache, v.data(), capped);
                 statusCacheLen   = (uint16_t)capped;
                 statusCacheValid = true;
+            }
+            // Update proxy info char — JS reads/subscribes this to detect proxy mode.
+            if (pxProxyInfoChar) {
+                int rssi = pxClient ? pxClient->getRssi() : 0;
+                char info[64];
+                int infoLen = snprintf(info, sizeof(info),
+                    "{\"rssi\":%d,\"rocket\":%d,\"phone\":%d}",
+                    rssi, (int)rocketConnected, (int)phoneConnected);
+                pxProxyInfoChar->setValue((uint8_t*)info, infoLen);
+                if (phoneConnected) pxProxyInfoChar->notify();
+                Serial.printf("[PROXY] info: %s\n", info);
             }
         }
     }
