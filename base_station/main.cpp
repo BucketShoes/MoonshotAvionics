@@ -903,7 +903,7 @@ void handleBleLogFetch() {
 
 void initBLE() {
   NimBLEDevice::init(WIFI_SSID);
-  NimBLEDevice::setPower(ESP_PWR_LVL_P9);  // +9 dBm — max for ESP-to-ESP range test
+  NimBLEDevice::setPower(BLUETOOTH_POWER);  // +9 dBm — max for ESP-to-ESP range test
   NimBLEDevice::setMTU(517);
 
   bleServer = NimBLEDevice::createServer();

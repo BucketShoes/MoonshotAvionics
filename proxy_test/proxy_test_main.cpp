@@ -114,7 +114,7 @@ void setup() {
   WiFi.mode(WIFI_OFF);
 
   NimBLEDevice::init("Moonshot-Rocket");
-  NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+  NimBLEDevice::setPower(BLUETOOTH_POWER);
   NimBLEDevice::setMTU(517);
 
   // Server

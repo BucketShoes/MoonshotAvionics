@@ -65,7 +65,7 @@ struct BleState {
   uint16_t fetchPendingLen;     // 0 = no chunk pending
   bool     fetchEndPending;     // 0-byte end marker not yet sent
 
-  uint8_t currentTxPhy;        // 1=1M 2=2M 3=Coded (for serial debug / status)
+  uint8_t currentTxPhy;        // 1=1M 2=2M 3=Coded (for serial debug / status) //TODO: is that right? it looks like its inconsistent - should be 0=1M, 1=2M, 2=Coded-S2, 3=Coded-S8
 
   // OTA notify-back: set by otaQueueNotify() from the NimBLE callback task;
   // drained by nonblockingBle() in the main loop.

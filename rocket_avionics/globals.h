@@ -75,7 +75,7 @@ extern bool      thrustLogForce;              // force page 0x0E to logs once (c
 // ===================== BLE SHARED STATE =====================
 // Mirrors of BLE state needed by telemetry.cpp and flight.cpp without a circular ble.h include.
 
-extern uint8_t   bleTxPhy;        // current TX PHY: 1=1M, 2=2M, 3=Coded; updated by ble.cpp
+extern uint8_t   bleTxPhy;        // current TX PHY: 1=1M, 2=2M, 3=Coded; updated by ble.cpp - //TODO: is that right? it looks like its inconsistent - should be 0=1M, 1=2M, 2=Coded-S2, 3=Coded-S8
 extern uint64_t  bleSubPageMask;  // mirrors bleState.subPageMask; updated on mask change
 
 #endif // GLOBALS_H
