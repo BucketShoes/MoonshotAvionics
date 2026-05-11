@@ -1351,26 +1351,30 @@ function initCharts() {
         rktOtaChar_.addEventListener('characteristicvaluechanged', onOtaNotify);
       } catch(e) { rktOtaChar_ = null; }
 
-      // Proxy info characteristic (optional — only present when connected via BLE proxy)
-      try {
-        rktProxyInfoChar_ = await svc.getCharacteristic(RKT_PROXY_INFO_CHAR_UUID);
-        await rktProxyInfoChar_.startNotifications();
-        rktProxyInfoChar_.addEventListener('characteristicvaluechanged', function(ev) {
-          var text = new TextDecoder().decode(ev.target.value.buffer);
-          document.getElementById('val-rkt-proxy-info').textContent = text;
-        });
-        // Read initial value immediately
-        rktProxyInfoChar_.readValue().then(function(v) {
+      // Proxy info characteristic (optional — only present when connected via BLE proxy).
+      // Fully isolated: any GATT error here must never propagate to the outer catch.
+      (async function() {
+        try {
+          rktProxyInfoChar_ = await svc.getCharacteristic(RKT_PROXY_INFO_CHAR_UUID);
+        } catch(e) { return; }
+        try { await rktProxyInfoChar_.startNotifications(); } catch(e) {}
+        try {
+          rktProxyInfoChar_.addEventListener('characteristicvaluechanged', function(ev) {
+            var text = new TextDecoder().decode(ev.target.value.buffer);
+            document.getElementById('val-rkt-proxy-info').textContent = text;
+          });
+        } catch(e) {}
+        try {
+          var v = await rktProxyInfoChar_.readValue();
           document.getElementById('val-rkt-proxy-info').textContent = new TextDecoder().decode(v.buffer);
-        }).catch(function() {});
-        // Poll every 5 seconds as a fallback (notifications may not always fire)
+        } catch(e) {}
         rktProxyInfoPollInterval = setInterval(function() {
           if (!rktProxyInfoChar_) return;
           rktProxyInfoChar_.readValue().then(function(v) {
             document.getElementById('val-rkt-proxy-info').textContent = new TextDecoder().decode(v.buffer);
           }).catch(function() {});
         }, 5000);
-      } catch(e) { rktProxyInfoChar_ = null; }
+      })();
 
       // Subscribe to log fetch notifications
       await rktFetchChar_.startNotifications();
