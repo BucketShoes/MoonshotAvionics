@@ -28,7 +28,7 @@ static NimBLECharacteristic* pxConnSetChar = nullptr;
 static NimBLECharacteristic* pxFetchChar   = nullptr;
 static NimBLECharacteristic* pxOtaChar     = nullptr;
 
-static volatile bool phoneConnected = false;
+static volatile bool phoneConnected  = false;
 static uint16_t      phoneConnHandle = PX_INVALID_CONN;
 
 // --- Client side (connects to rocket) ---
@@ -43,112 +43,108 @@ static NimBLERemoteCharacteristic* rxOtaChar     = nullptr;
 static volatile bool rocketConnected = false;
 static volatile bool scanActive      = false;
 
-// onResult sets this; bleProxyLoop() does the actual connect outside the callback.
 static NimBLEAddress pendingAddr;
 static volatile bool connectPending  = false;
 
-// Scan retry back-off
 static unsigned long lastScanMs     = 0;
-static unsigned long scanIntervalMs = 2000;  // 2s gap between scan attempts
+static unsigned long scanIntervalMs = 2000;
 
-// ===================== BACKPRESSURE =====================
+// ===================== PENDING NOTIFY BUFFERS =====================
+// All BLE stack callbacks (both server-side onWrite and client-side notify)
+// run on the NimBLE task. They must never call notify() or writeValue() —
+// those allocate mbufs while the stack already holds some for the current
+// packet, exhausting the pool. Instead every direction goes through a
+// pending buffer that bleProxyLoop() drains on the Arduino task.
 
 struct PendingNotify {
     uint8_t       buf[514];
     uint16_t      len;
     bool          pending;
-    unsigned long retryAfterMs;  // don't hammer the pool — wait this long after a failed notify
+    unsigned long retryAfterMs;
 };
-static PendingNotify pxTelemPending = {};
-static PendingNotify pxFetchPending = {};
-static PendingNotify pxOtaPending   = {};
+static PendingNotify pxTelemPending   = {};
+static PendingNotify pxFetchPending   = {};
+static PendingNotify pxOtaPending     = {};
 
-static bool retryPending(NimBLECharacteristic* chr, PendingNotify& pn) {
+// Phone→rocket write forwarding also goes through pending buffers so the
+// server onWrite callback never touches the client stack.
+struct PendingWrite {
+    uint8_t  buf[514];
+    uint16_t len;
+    bool     withResponse;
+    bool     pending;
+};
+static PendingWrite  fwdCmdPending     = {};
+static PendingWrite  fwdConnSetPending = {};
+static PendingWrite  fwdFetchPending   = {};
+static PendingWrite  fwdOtaPending     = {};
+
+// ===================== DRAIN HELPERS =====================
+
+static bool drainNotify(NimBLECharacteristic* chr, PendingNotify& pn) {
     if (!pn.pending) return true;
     if (!phoneConnected || !chr) { pn.pending = false; return true; }
     if (millis() < pn.retryAfterMs) return false;
     if (!chr->notify(pn.buf, pn.len)) {
-        pn.retryAfterMs = millis() + 20;  // back off 20ms before retrying
+        pn.retryAfterMs = millis() + 20;
         return false;
     }
     pn.pending = false;
     return true;
 }
 
-// ===================== ROCKET NOTIFY CALLBACKS =====================
+static void drainWrite(NimBLERemoteCharacteristic* rxChr, PendingWrite& pw) {
+    if (!pw.pending) return;
+    if (!rocketConnected || !rxChr) { pw.pending = false; return; }
+    rxChr->writeValue(pw.buf, pw.len, pw.withResponse);
+    pw.pending = false;
+}
 
-// Notification callbacks fire on the NimBLE stack task — do NOT call notify()
-// here, it re-enters the mbuf pool while the stack is still using it for the
-// incoming packet and exhausts the buffer pool immediately.  Just queue into
-// the pending buffer; bleProxyLoop() (Arduino task) drains it.
+// ===================== ROCKET → PHONE NOTIFY CALLBACKS =====================
+// Called on NimBLE stack task — copy only, never notify().
 
 static void onRocketTelem(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
     Serial.printf("[PROXY] telem rx %uB phone=%d\n", (unsigned)len, (int)phoneConnected);
     size_t capped = len > sizeof(pxTelemPending.buf) ? sizeof(pxTelemPending.buf) : len;
     memcpy(pxTelemPending.buf, data, capped);
-    pxTelemPending.len = (uint16_t)capped;
+    pxTelemPending.len     = (uint16_t)capped;
     pxTelemPending.pending = true;
 }
 
 static void onRocketFetch(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
     size_t capped = len > sizeof(pxFetchPending.buf) ? sizeof(pxFetchPending.buf) : len;
     memcpy(pxFetchPending.buf, data, capped);
-    pxFetchPending.len = (uint16_t)capped;
+    pxFetchPending.len     = (uint16_t)capped;
     pxFetchPending.pending = true;
 }
 
 static void onRocketOta(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
     size_t capped = len > sizeof(pxOtaPending.buf) ? sizeof(pxOtaPending.buf) : len;
     memcpy(pxOtaPending.buf, data, capped);
-    pxOtaPending.len = (uint16_t)capped;
+    pxOtaPending.len     = (uint16_t)capped;
     pxOtaPending.pending = true;
 }
 
-// ===================== PHONE → ROCKET WRITE FORWARDING =====================
-
-static void forwardWrite(NimBLERemoteCharacteristic* rxChr,
-                         const uint8_t* data, size_t len, bool withResponse) {
-    if (!rocketConnected || !rxChr) return;
-    rxChr->writeValue(data, len, withResponse);
-}
-
-// ===================== SERVER CONNECT/DISCONNECT =====================
-// Called from BleServerCallbacks in main.cpp.
-
-void bleProxyOnServerConnect(uint16_t connHandle) {
-    phoneConnected  = true;
-    phoneConnHandle = connHandle;
-    Serial.printf("[PROXY] Phone connected handle=%u\n", connHandle);
-}
-
-void bleProxyOnServerDisconnect(uint16_t connHandle) {
-    if (connHandle != phoneConnHandle) return;
-    phoneConnected  = false;
-    phoneConnHandle = PX_INVALID_CONN;
-    pxTelemPending.pending = false;
-    pxFetchPending.pending = false;
-    pxOtaPending.pending   = false;
-    Serial.println("[PROXY] Phone disconnected");
-}
-
-// ===================== SERVER CHARACTERISTIC CALLBACKS =====================
+// ===================== PHONE → ROCKET WRITE CALLBACKS =====================
+// Called on NimBLE stack task — copy into pending buffer, never touch client stack.
 
 class PxCmdCallbacks : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* chr, NimBLEConnInfo&) override {
         NimBLEAttValue v = chr->getValue();
-        if (!rocketConnected || !rxCmdChar) { uint8_t nack = 0xFF; chr->setValue(&nack, 1); return; }
-        bool ok = rxCmdChar->writeValue(v.data(), v.size(), true);
-        if (ok) {
-            NimBLEAttValue resp = rxCmdChar->getValue();
-            chr->setValue(resp.data(), resp.size());
-        } else {
-            uint8_t nack = 0xFF; chr->setValue(&nack, 1);
-        }
+        size_t capped = v.size() > sizeof(fwdCmdPending.buf) ? sizeof(fwdCmdPending.buf) : v.size();
+        memcpy(fwdCmdPending.buf, v.data(), capped);
+        fwdCmdPending.len          = (uint16_t)capped;
+        fwdCmdPending.withResponse = true;
+        fwdCmdPending.pending      = true;
     }
 };
 
 class PxStatusCallbacks : public NimBLECharacteristicCallbacks {
     void onRead(NimBLECharacteristic* chr, NimBLEConnInfo&) override {
+        // READ can't be deferred — the response must be set before returning.
+        // readValue() on the client stack from a server callback is the one
+        // unavoidable cross-stack call. It's infrequent (user-initiated) and
+        // brief, so the risk is low.
         if (!rocketConnected || !rxStatusChar) {
             const char* err = "{\"proxy\":\"no_rocket\"}";
             chr->setValue((uint8_t*)err, strlen(err));
@@ -162,22 +158,34 @@ class PxStatusCallbacks : public NimBLECharacteristicCallbacks {
 class PxConnSetCallbacks : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* chr, NimBLEConnInfo&) override {
         NimBLEAttValue v = chr->getValue();
-        forwardWrite(rxConnSetChar, v.data(), v.size(), false);
+        size_t capped = v.size() > sizeof(fwdConnSetPending.buf) ? sizeof(fwdConnSetPending.buf) : v.size();
+        memcpy(fwdConnSetPending.buf, v.data(), capped);
+        fwdConnSetPending.len          = (uint16_t)capped;
+        fwdConnSetPending.withResponse = false;
+        fwdConnSetPending.pending      = true;
     }
 };
 
 class PxFetchCallbacks : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* chr, NimBLEConnInfo&) override {
         NimBLEAttValue v = chr->getValue();
-        pxFetchPending.pending = false;
-        forwardWrite(rxFetchChar, v.data(), v.size(), false);
+        pxFetchPending.pending = false;  // discard any in-flight fetch response
+        size_t capped = v.size() > sizeof(fwdFetchPending.buf) ? sizeof(fwdFetchPending.buf) : v.size();
+        memcpy(fwdFetchPending.buf, v.data(), capped);
+        fwdFetchPending.len          = (uint16_t)capped;
+        fwdFetchPending.withResponse = false;
+        fwdFetchPending.pending      = true;
     }
 };
 
 class PxOtaCallbacks : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* chr, NimBLEConnInfo&) override {
         NimBLEAttValue v = chr->getValue();
-        forwardWrite(rxOtaChar, v.data(), v.size(), false);
+        size_t capped = v.size() > sizeof(fwdOtaPending.buf) ? sizeof(fwdOtaPending.buf) : v.size();
+        memcpy(fwdOtaPending.buf, v.data(), capped);
+        fwdOtaPending.len          = (uint16_t)capped;
+        fwdOtaPending.withResponse = false;
+        fwdOtaPending.pending      = true;
     }
 };
 
@@ -193,6 +201,8 @@ class PxClientCallbacks : public NimBLEClientCallbacks {
         connectPending  = false;
         rxTelemChar = rxCmdChar = rxStatusChar = nullptr;
         rxConnSetChar = rxFetchChar = rxOtaChar = nullptr;
+        fwdCmdPending.pending = fwdConnSetPending.pending = false;
+        fwdFetchPending.pending = fwdOtaPending.pending   = false;
         Serial.printf("[PROXY] Rocket BLE disconnected reason=%d\n", reason);
         scanIntervalMs = min(scanIntervalMs * 2, (unsigned long)30000);
         lastScanMs = millis();
@@ -206,22 +216,17 @@ class PxScanCallbacks : public NimBLEScanCallbacks {
         std::string advAddr = adv->getAddress().toString();
         std::string ownAddr = NimBLEDevice::getAddress().toString();
 
-        // Always log what we see so we can diagnose what's on air.
         Serial.printf("[PROXY] adv: %s rssi=%d name='%s' svc_match=%d self=%d\n",
                       advAddr.c_str(), adv->getRSSI(), adv->getName().c_str(),
                       (int)adv->isAdvertisingService(NimBLEUUID(RKT_SVC_UUID)),
                       (int)(advAddr == ownAddr));
 
-        // Skip our own advertisement (base station advertises the rocket UUID too).
-        // Compare as strings — address type differences can break operator==.
         if (advAddr == ownAddr) return;
-
         if (!adv->isAdvertisingService(NimBLEUUID(RKT_SVC_UUID))) return;
 
         Serial.printf("[PROXY] Found rocket candidate: %s  RSSI=%d\n",
                       advAddr.c_str(), adv->getRSSI());
 
-        // Record address for doConnect() — do NOT call connect() here (BLE stack task).
         NimBLEDevice::getScan()->stop();
         scanActive     = false;
         pendingAddr    = adv->getAddress();
@@ -235,7 +240,6 @@ class PxScanCallbacks : public NimBLEScanCallbacks {
 };
 
 // ===================== CONNECT + SERVICE DISCOVERY =====================
-// Called from bleProxyLoop() on the Arduino main task, not from a BLE callback.
 
 static void doConnect() {
     connectPending = false;
@@ -305,7 +309,6 @@ void bleProxyInit() {
     pxFetchChar->setCallbacks(new PxFetchCallbacks());
     pxOtaChar->setCallbacks(new PxOtaCallbacks());
 
-    // Override the GAP device name set by NimBLEDevice::init(WIFI_SSID) in initBLE().
     NimBLEDevice::setDeviceName(ROCKET_DEVICE_NAME);
 
     NimBLEAdvertising* advert = NimBLEDevice::getAdvertising();
@@ -314,17 +317,11 @@ void bleProxyInit() {
     advert->enableScanResponse(true);
     advert->setMinInterval(0x20);
     advert->setMaxInterval(0x40);
-    advert->start();
+    advert->start(0);
 
     NimBLEScan* scan = NimBLEDevice::getScan();
-    // wantDuplicates=true: keep firing onResult throughout the scan duration,
-    // not just on the first seen device.  Needed so we see the rocket even if
-    // we see something else (our own advert) first.
     scan->setScanCallbacks(new PxScanCallbacks(), true);
     scan->setActiveScan(true);
-    // interval=160ms, window=80ms (50% duty) — leaves gaps for WiFi beacon coex.
-    // 100% duty actually performs worse: the controller constantly interrupts the
-    // scan window for WiFi beacons instead of fitting them in the gaps cleanly.
     scan->setInterval(160);
     scan->setWindow(80);
 
@@ -332,9 +329,16 @@ void bleProxyInit() {
 }
 
 void bleProxyLoop() {
-    retryPending(pxTelemChar, pxTelemPending);
-    retryPending(pxFetchChar, pxFetchPending);
-    retryPending(pxOtaChar,   pxOtaPending);
+    // Drain rocket→phone notifies
+    drainNotify(pxTelemChar, pxTelemPending);
+    drainNotify(pxFetchChar, pxFetchPending);
+    drainNotify(pxOtaChar,   pxOtaPending);
+
+    // Drain phone→rocket writes (deferred out of server callbacks)
+    drainWrite(rxCmdChar,     fwdCmdPending);
+    drainWrite(rxConnSetChar, fwdConnSetPending);
+    drainWrite(rxFetchChar,   fwdFetchPending);
+    drainWrite(rxOtaChar,     fwdOtaPending);
 
     if (connectPending) {
         doConnect();
