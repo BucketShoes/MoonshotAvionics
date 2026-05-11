@@ -1353,29 +1353,22 @@ function initCharts() {
 
       // Proxy info characteristic (optional — only present when connected via BLE proxy)
       try {
-        document.getElementById('val-rkt-proxy-info').textContent = "getting"";
         rktProxyInfoChar_ = await svc.getCharacteristic(RKT_PROXY_INFO_CHAR_UUID);
-        document.getElementById('val-rkt-proxy-info').textContent = "got";
         await rktProxyInfoChar_.startNotifications();
-        document.getElementById('val-rkt-proxy-info').textContent = "started";
         rktProxyInfoChar_.addEventListener('characteristicvaluechanged', function(ev) {
           var text = new TextDecoder().decode(ev.target.value.buffer);
-          document.getElementById('val-rkt-proxy-info').textContent = text + ".";
+          document.getElementById('val-rkt-proxy-info').textContent = text;
         });
         // Read initial value immediately
         rktProxyInfoChar_.readValue().then(function(v) {
           document.getElementById('val-rkt-proxy-info').textContent = new TextDecoder().decode(v.buffer);
-        }).catch(function(exceptioninfo) {
-          document.getElementById('val-rkt-proxy-info').textContent = "caught" + exceptioninfo;
-        });
+        }).catch(function() {});
         // Poll every 5 seconds as a fallback (notifications may not always fire)
         rktProxyInfoPollInterval = setInterval(function() {
           if (!rktProxyInfoChar_) return;
           rktProxyInfoChar_.readValue().then(function(v) {
-            document.getElementById('val-rkt-proxy-info').textContent = new TextDecoder().decode(v.buffer) + ";";
-                  }).catch(function(exceptioninfo) {
-          document.getElementById('val-rkt-proxy-info').textContent = "caught2-" + exceptioninfo;
-        });
+            document.getElementById('val-rkt-proxy-info').textContent = new TextDecoder().decode(v.buffer);
+          }).catch(function() {});
         }, 5000);
       } catch(e) { rktProxyInfoChar_ = null; }
 
