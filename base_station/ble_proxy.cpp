@@ -54,9 +54,10 @@ static unsigned long scanIntervalMs = 2000;  // 2s gap between scan attempts
 // ===================== BACKPRESSURE =====================
 
 struct PendingNotify {
-    uint8_t  buf[514];
-    uint16_t len;
-    bool     pending;
+    uint8_t       buf[514];
+    uint16_t      len;
+    bool          pending;
+    unsigned long retryAfterMs;  // don't hammer the pool — wait this long after a failed notify
 };
 static PendingNotify pxTelemPending = {};
 static PendingNotify pxFetchPending = {};
@@ -65,7 +66,11 @@ static PendingNotify pxOtaPending   = {};
 static bool retryPending(NimBLECharacteristic* chr, PendingNotify& pn) {
     if (!pn.pending) return true;
     if (!phoneConnected || !chr) { pn.pending = false; return true; }
-    if (!chr->notify(pn.buf, pn.len)) return false;
+    if (millis() < pn.retryAfterMs) return false;
+    if (!chr->notify(pn.buf, pn.len)) {
+        pn.retryAfterMs = millis() + 20;  // back off 20ms before retrying
+        return false;
+    }
     pn.pending = false;
     return true;
 }
