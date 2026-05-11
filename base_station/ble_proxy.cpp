@@ -289,6 +289,25 @@ static void doConnect() {
     Serial.println("[PROXY] Rocket proxy active");
 }
 
+// ===================== SERVER CONNECT/DISCONNECT =====================
+// Called from BleServerCallbacks in main.cpp.
+
+void bleProxyOnServerConnect(uint16_t connHandle) {
+    phoneConnected  = true;
+    phoneConnHandle = connHandle;
+    Serial.printf("[PROXY] Phone connected handle=%u\n", connHandle);
+}
+
+void bleProxyOnServerDisconnect(uint16_t connHandle) {
+    if (connHandle != phoneConnHandle) return;
+    phoneConnected  = false;
+    phoneConnHandle = PX_INVALID_CONN;
+    pxTelemPending.pending = false;
+    pxFetchPending.pending = false;
+    pxOtaPending.pending   = false;
+    Serial.println("[PROXY] Phone disconnected");
+}
+
 // ===================== PUBLIC API =====================
 
 void bleProxyInit() {
