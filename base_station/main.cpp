@@ -363,7 +363,7 @@ void pushToAllTransports(const uint8_t* wsBuf, size_t wsLen) {
     ws.binaryAll(wsBuf, wsLen);
   }
   if (bleEnabled && bleTelemChar && bleTelemSubHandle != 0xFFFF) {
-    bleTelemChar->notify((uint8_t*)wsBuf, wsLen, bleTelemSubHandle);
+    //bleTelemChar->notify((uint8_t*)wsBuf, wsLen, bleTelemSubHandle);
   }
 }
 
