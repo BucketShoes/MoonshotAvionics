@@ -117,7 +117,8 @@ static void drainWrite(NimBLERemoteCharacteristic* rxChr, PendingWrite& pw, cons
 // Called on NimBLE stack task — copy only, never notify().
 
 static void onRocketTelem(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
-    Serial.printf("[PROXY] telem rx %uB phone=%d\n", (unsigned)len, (int)phoneConnected);
+    int rssi = pxClient ? pxClient->getRssi() : 0;
+    Serial.printf("[PROXY] telem rx %uB phone=%d rssi=%d\n", (unsigned)len, (int)phoneConnected, rssi);
     size_t capped = len > sizeof(pxTelemPending.buf) ? sizeof(pxTelemPending.buf) : len;
     memcpy(pxTelemPending.buf, data, capped);
     pxTelemPending.len     = (uint16_t)capped;

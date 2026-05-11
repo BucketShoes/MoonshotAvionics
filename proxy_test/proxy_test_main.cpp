@@ -170,8 +170,9 @@ void loop() {
     if (rxLen > 0) {
       bool ok = serverTelemChar->notify(rxBuf, rxLen);
       txCount++;
-      Serial.printf("[SRV] tx #%lu %uB ok=%d  rx_total=%lu rocket=%d; heapkb=%d\n",
-                    txCount, rxLen, ok ? 1 : 0, rxCount, (int)rocketConnected, esp_get_free_heap_size()/1024);
+      int rssi = rktClient ? rktClient->getRssi() : 0;
+      Serial.printf("[SRV] tx #%lu %uB ok=%d  rx_total=%lu rocket=%d rssi=%d heap=%dkB\n",
+                    txCount, rxLen, ok ? 1 : 0, rxCount, (int)rocketConnected, rssi, esp_get_free_heap_size()/1024);
     } else {
       Serial.printf("[SRV] no data yet  rocket=%d\n", (int)rocketConnected);
     }
