@@ -24,23 +24,11 @@
 int bleProxyLedPin = -1;
 
 // LED brightness levels (11-bit PWM, 0-2047)
-#define LED_TELEM_FLASH  2047   // brief full-brightness flash on telem rx
-#define LED_CONNECTED     200   // dim steady: rocket connected, no recent telem
+#define LED_TELEM_FLASH  500   // brief full-brightness flash on telem rx
+#define LED_CONNECTED     10   // dim steady: rocket connected, no recent telem
 #define LED_OFF             0   // scanning / disconnected
 
 static unsigned long ledFlashUntilMs = 0;
-
-static void proxyLedUpdate() {
-    if (bleProxyLedPin < 0) return;
-    unsigned long now = millis();
-    if (now < ledFlashUntilMs) {
-        ledcWrite(bleProxyLedPin, LED_TELEM_FLASH);
-    } else if (rocketConnected) {
-        ledcWrite(bleProxyLedPin, LED_CONNECTED);
-    } else {
-        ledcWrite(bleProxyLedPin, LED_OFF);
-    }
-}
 
 // ===================== STATE =====================
 
@@ -74,6 +62,18 @@ static volatile bool connectPending  = false;
 
 static unsigned long lastScanMs     = 0;
 static unsigned long scanIntervalMs = 2000;
+
+static void proxyLedUpdate() {
+    if (bleProxyLedPin < 0) return;
+    unsigned long now = millis();
+    if (now < ledFlashUntilMs) {
+        ledcWrite(bleProxyLedPin, LED_TELEM_FLASH);
+    } else if (rocketConnected) {
+        ledcWrite(bleProxyLedPin, LED_CONNECTED);
+    } else {
+        ledcWrite(bleProxyLedPin, LED_OFF);
+    }
+}
 
 // ===================== PENDING NOTIFY BUFFERS =====================
 // All BLE stack callbacks (both server-side onWrite and client-side notify)
