@@ -66,6 +66,14 @@ static PendingNotify pxTelemPending   = {};
 static PendingNotify pxFetchPending   = {};
 static PendingNotify pxOtaPending     = {};
 
+// Cached rocket status — refreshed by bleProxyLoop(), served synchronously
+// from PxStatusCallbacks::onRead() without touching the client stack.
+static uint8_t  statusCache[256]   = {};
+static uint16_t statusCacheLen     = 0;
+static bool     statusCacheValid   = false;
+static unsigned long statusLastFetchMs = 0;
+#define STATUS_CACHE_INTERVAL_MS 2000
+
 // Phone→rocket write forwarding also goes through pending buffers so the
 // server onWrite callback never touches the client stack.
 struct PendingWrite {
@@ -93,10 +101,15 @@ static bool drainNotify(NimBLECharacteristic* chr, PendingNotify& pn) {
     return true;
 }
 
-static void drainWrite(NimBLERemoteCharacteristic* rxChr, PendingWrite& pw) {
+static void drainWrite(NimBLERemoteCharacteristic* rxChr, PendingWrite& pw, const char* name) {
     if (!pw.pending) return;
-    if (!rocketConnected || !rxChr) { pw.pending = false; return; }
-    rxChr->writeValue(pw.buf, pw.len, pw.withResponse);
+    if (!rocketConnected || !rxChr) {
+        Serial.printf("[PROXY] drainWrite %s dropped (no rocket)\n", name);
+        pw.pending = false;
+        return;
+    }
+    bool ok = rxChr->writeValue(pw.buf, pw.len, pw.withResponse);
+    Serial.printf("[PROXY] drainWrite %s %uB ok=%d\n", name, pw.len, ok ? 1 : 0);
     pw.pending = false;
 }
 
@@ -131,6 +144,9 @@ static void onRocketOta(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, 
 class PxCmdCallbacks : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* chr, NimBLEConnInfo&) override {
         NimBLEAttValue v = chr->getValue();
+        Serial.printf("[PROXY] CMD write %uB: ", (unsigned)v.size());
+        for (size_t i = 0; i < v.size() && i < 16; i++) Serial.printf("%02X ", v.data()[i]);
+        Serial.println();
         size_t capped = v.size() > sizeof(fwdCmdPending.buf) ? sizeof(fwdCmdPending.buf) : v.size();
         memcpy(fwdCmdPending.buf, v.data(), capped);
         fwdCmdPending.len          = (uint16_t)capped;
@@ -141,23 +157,23 @@ class PxCmdCallbacks : public NimBLECharacteristicCallbacks {
 
 class PxStatusCallbacks : public NimBLECharacteristicCallbacks {
     void onRead(NimBLECharacteristic* chr, NimBLEConnInfo&) override {
-        // READ can't be deferred — the response must be set before returning.
-        // readValue() on the client stack from a server callback is the one
-        // unavoidable cross-stack call. It's infrequent (user-initiated) and
-        // brief, so the risk is low.
-        if (!rocketConnected || !rxStatusChar) {
-            const char* err = "{\"proxy\":\"no_rocket\"}";
+        Serial.printf("[PROXY] STATUS read rocketConn=%d cacheValid=%d cacheLen=%u\n",
+                      (int)rocketConnected, (int)statusCacheValid, statusCacheLen);
+        // Serve from cache — never call readValue() from a stack callback.
+        // bleProxyLoop() refreshes the cache every STATUS_CACHE_INTERVAL_MS.
+        if (!statusCacheValid) {
+            const char* err = rocketConnected ? "{\"proxy\":\"fetching\"}" : "{\"proxy\":\"no_rocket\"}";
             chr->setValue((uint8_t*)err, strlen(err));
             return;
         }
-        NimBLEAttValue v = rxStatusChar->readValue();
-        chr->setValue(v.data(), v.size());
+        chr->setValue(statusCache, statusCacheLen);
     }
 };
 
 class PxConnSetCallbacks : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* chr, NimBLEConnInfo&) override {
         NimBLEAttValue v = chr->getValue();
+        Serial.printf("[PROXY] CONNSET write %uB\n", (unsigned)v.size());
         size_t capped = v.size() > sizeof(fwdConnSetPending.buf) ? sizeof(fwdConnSetPending.buf) : v.size();
         memcpy(fwdConnSetPending.buf, v.data(), capped);
         fwdConnSetPending.len          = (uint16_t)capped;
@@ -169,6 +185,7 @@ class PxConnSetCallbacks : public NimBLECharacteristicCallbacks {
 class PxFetchCallbacks : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* chr, NimBLEConnInfo&) override {
         NimBLEAttValue v = chr->getValue();
+        Serial.printf("[PROXY] FETCH write %uB\n", (unsigned)v.size());
         pxFetchPending.pending = false;  // discard any in-flight fetch response
         size_t capped = v.size() > sizeof(fwdFetchPending.buf) ? sizeof(fwdFetchPending.buf) : v.size();
         memcpy(fwdFetchPending.buf, v.data(), capped);
@@ -181,6 +198,7 @@ class PxFetchCallbacks : public NimBLECharacteristicCallbacks {
 class PxOtaCallbacks : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* chr, NimBLEConnInfo&) override {
         NimBLEAttValue v = chr->getValue();
+        Serial.printf("[PROXY] OTA write %uB\n", (unsigned)v.size());
         size_t capped = v.size() > sizeof(fwdOtaPending.buf) ? sizeof(fwdOtaPending.buf) : v.size();
         memcpy(fwdOtaPending.buf, v.data(), capped);
         fwdOtaPending.len          = (uint16_t)capped;
@@ -203,6 +221,8 @@ class PxClientCallbacks : public NimBLEClientCallbacks {
         rxConnSetChar = rxFetchChar = rxOtaChar = nullptr;
         fwdCmdPending.pending = fwdConnSetPending.pending = false;
         fwdFetchPending.pending = fwdOtaPending.pending   = false;
+        statusCacheValid = false;
+        statusCacheLen   = 0;
         Serial.printf("[PROXY] Rocket BLE disconnected reason=%d\n", reason);
         scanIntervalMs = min(scanIntervalMs * 2, (unsigned long)30000);
         lastScanMs = millis();
@@ -354,14 +374,29 @@ void bleProxyLoop() {
     drainNotify(pxOtaChar,   pxOtaPending);
 
     // Drain phone→rocket writes (deferred out of server callbacks)
-    drainWrite(rxCmdChar,     fwdCmdPending);
-    drainWrite(rxConnSetChar, fwdConnSetPending);
-    drainWrite(rxFetchChar,   fwdFetchPending);
-    drainWrite(rxOtaChar,     fwdOtaPending);
+    drainWrite(rxCmdChar,     fwdCmdPending,     "CMD");
+    drainWrite(rxConnSetChar, fwdConnSetPending, "CONNSET");
+    drainWrite(rxFetchChar,   fwdFetchPending,   "FETCH");
+    drainWrite(rxOtaChar,     fwdOtaPending,     "OTA");
 
     if (connectPending) {
         doConnect();
         return;
+    }
+
+    // Periodically refresh status cache from rocket — on Arduino task, never from a callback.
+    if (rocketConnected && rxStatusChar) {
+        unsigned long now = millis();
+        if (now - statusLastFetchMs >= STATUS_CACHE_INTERVAL_MS) {
+            statusLastFetchMs = now;
+            NimBLEAttValue v = rxStatusChar->readValue();
+            if (v.size() > 0) {
+                size_t capped = v.size() > sizeof(statusCache) ? sizeof(statusCache) : v.size();
+                memcpy(statusCache, v.data(), capped);
+                statusCacheLen   = (uint16_t)capped;
+                statusCacheValid = true;
+            }
+        }
     }
 
     if (!rocketConnected && !scanActive) {
