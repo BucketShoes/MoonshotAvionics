@@ -1124,13 +1124,14 @@ function initCharts() {
   // Type 0xAF = telemetry header record; other types = data pages.
   // =============================================================
 
-  var RKT_SERVICE_UUID       = '524f434b-4554-5354-424c-000000000000';
-  var RKT_TELEM_CHAR_UUID    = '524f434b-4554-5354-424c-000000000001';
-  var RKT_CMD_CHAR_UUID      = '524f434b-4554-5354-424c-000000000002';
-  var RKT_STATUS_CHAR_UUID   = '524f434b-4554-5354-424c-000000000003';
-  var RKT_CONNSET_CHAR_UUID  = '524f434b-4554-5354-424c-000000000004';
-  var RKT_LOGFETCH_CHAR_UUID = '524f434b-4554-5354-424c-000000000005';
-  var RKT_OTA_CHAR_UUID      = '524f434b-4554-5354-424c-000000000006';
+  var RKT_SERVICE_UUID          = '524f434b-4554-5354-424c-000000000000';
+  var RKT_TELEM_CHAR_UUID       = '524f434b-4554-5354-424c-000000000001';
+  var RKT_CMD_CHAR_UUID         = '524f434b-4554-5354-424c-000000000002';
+  var RKT_STATUS_CHAR_UUID      = '524f434b-4554-5354-424c-000000000003';
+  var RKT_CONNSET_CHAR_UUID     = '524f434b-4554-5354-424c-000000000004';
+  var RKT_LOGFETCH_CHAR_UUID    = '524f434b-4554-5354-424c-000000000005';
+  var RKT_OTA_CHAR_UUID         = '524f434b-4554-5354-424c-000000000006';
+  var RKT_PROXY_INFO_CHAR_UUID  = '524f434b-4554-5354-424c-0000000000ff';
 
   // ConnSet command type bytes
   var RKT_CS_INTERVAL = 0x01;
@@ -1148,6 +1149,8 @@ function initCharts() {
   var rktConnSetChar_ = null;
   var rktFetchChar_ = null;
   var rktOtaChar_ = null;
+  var rktProxyInfoChar_ = null;
+  var rktProxyInfoPollInterval = null;
   var rktBleConnected = false;
   var rktFetchDone = false;
   var rktFetchBuffer = [];
@@ -1316,6 +1319,9 @@ function initCharts() {
         setRocketBle(false);
         rktTelemChar_ = null; rktCmdChar_ = null;
         rktStatusChar_ = null; rktConnSetChar_ = null; rktFetchChar_ = null;
+        rktProxyInfoChar_ = null;
+        if (rktProxyInfoPollInterval) { clearInterval(rktProxyInfoPollInterval); rktProxyInfoPollInterval = null; }
+        document.getElementById('val-rkt-proxy-info').textContent = '';
         stopStatusPolling();
         console.log('Rocket BLE disconnected');
       });
@@ -1344,6 +1350,27 @@ function initCharts() {
         await rktOtaChar_.startNotifications();
         rktOtaChar_.addEventListener('characteristicvaluechanged', onOtaNotify);
       } catch(e) { rktOtaChar_ = null; }
+
+      // Proxy info characteristic (optional — only present when connected via BLE proxy)
+      try {
+        rktProxyInfoChar_ = await svc.getCharacteristic(RKT_PROXY_INFO_CHAR_UUID);
+        await rktProxyInfoChar_.startNotifications();
+        rktProxyInfoChar_.addEventListener('characteristicvaluechanged', function(ev) {
+          var text = new TextDecoder().decode(ev.target.value.buffer);
+          document.getElementById('val-rkt-proxy-info').textContent = text;
+        });
+        // Read initial value immediately
+        rktProxyInfoChar_.readValue().then(function(v) {
+          document.getElementById('val-rkt-proxy-info').textContent = new TextDecoder().decode(v.buffer);
+        }).catch(function() {});
+        // Poll every 5 seconds as a fallback (notifications may not always fire)
+        rktProxyInfoPollInterval = setInterval(function() {
+          if (!rktProxyInfoChar_) return;
+          rktProxyInfoChar_.readValue().then(function(v) {
+            document.getElementById('val-rkt-proxy-info').textContent = new TextDecoder().decode(v.buffer);
+          }).catch(function() {});
+        }, 5000);
+      } catch(e) { rktProxyInfoChar_ = null; }
 
       // Subscribe to log fetch notifications
       await rktFetchChar_.startNotifications();
