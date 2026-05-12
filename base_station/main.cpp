@@ -46,6 +46,8 @@ unsigned long bootMicros = 0;
 bool wifiEnabled = true;
 bool bleEnabled = true;
 
+#define BLE_ADV_INTERVAL 1000 // 0.625ms units
+
 // ===================== HARDWARE =====================
 
 AsyncWebServer httpServer(80);
@@ -697,7 +699,7 @@ class BleServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer* server, NimBLEConnInfo& connInfo) override {
     bleClientConnected = true;
     Serial.print("BLE+ addr:"); Serial.println(connInfo.getAddress().toString().c_str());
-    //TODO: @@@ force 2m phy
+    //TODO: @@@ force coded phy s=8
   }
   void onDisconnect(NimBLEServer* server, NimBLEConnInfo& connInfo, int reason) override {
     bleClientConnected = false;
@@ -877,7 +879,7 @@ void handleBleLogFetch() {
 
 void initBLE() {
   NimBLEDevice::init(WIFI_SSID);
-  NimBLEDevice::setPower(ESP_PWR_LVL_P3);  // +3 dBm — pocket range is plenty
+  NimBLEDevice::setPower(BLUETOOTH_POWER);
   NimBLEDevice::setMTU(517);
 
   bleServer = NimBLEDevice::createServer();
@@ -1025,8 +1027,8 @@ void setup() {
 
   Serial.println("=== Ready ===");
 
-  NimBLEDevice::getAdvertising()->setAdvertisingInterval(1600);
-  esp_wifi_set_max_tx_power(20);
+  NimBLEDevice::getAdvertising()->setAdvertisingInterval(BLE_ADV_INTERVAL);
+  esp_wifi_set_max_tx_power(20); //in 0.25dbm units low power wifi
   esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
   setCpuFrequencyMhz(160);
 }

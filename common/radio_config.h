@@ -99,4 +99,8 @@
 // Used by rocket to decide whether the link is live (last command within window).
 #define ROCKET_NO_BASE_HEARD_THRESHOLD_US  130'000'000UL
 
+
+#define BLUETOOTH_POWER ESP_PWR_LVL_P9
+
+
 #endif // COMMON_RADIO_CONFIG_H
