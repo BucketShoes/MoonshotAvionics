@@ -5,7 +5,7 @@
 //   nonblockingBle() — call every loop iteration
 //
 // GATT layout (separate service UUID from base station):
-//   Service:     524f434b-4554-5354-424c-000000000000
+//   Service:     524f434b-4554-5354-424c-000000000000  (ASCII: ROCKET+ST+BL)
 //   Char 0001:   NOTIFY              — realtime telemetry records
 //   Char 0002:   WRITE|WRITE_NR      — commands (same binary format as base station, waitMs/sends ignored)
 //   Char 0003:   READ                — status JSON (logIdx, batt, armed, uptime)
@@ -65,7 +65,8 @@ struct BleState {
   uint16_t fetchPendingLen;     // 0 = no chunk pending
   bool     fetchEndPending;     // 0-byte end marker not yet sent
 
-  uint8_t currentTxPhy;        // 1=1M 2=2M 3=Coded (for serial debug / status) //TODO: is that right? it looks like its inconsistent - should be 0=1M, 1=2M, 2=Coded-S2, 3=Coded-S8
+  uint8_t currentTxPhy;        // Negotiated PHY in NimBLE units: 1=1M, 2=2M, 3=Coded (for debug/status)
+                               // applyPhyParams() takes wire-protocol values: 0=1M, 1=2M, 2=Coded-S2, 3=Coded-S8
 
   // OTA notify-back: set by otaQueueNotify() from the NimBLE callback task;
   // drained by nonblockingBle() in the main loop.

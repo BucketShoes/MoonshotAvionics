@@ -69,7 +69,9 @@ uint32_t highestNonce = 0;
 
 // ===================== BLE GATT SERVER =====================
 
-#define BLE_SERVICE_UUID        "4d4f4f4e-5348-4f54-4253-000000000000"
+#define BLE_DEVICE_NAME         "MoonBase"
+#define BLE_SHORT_NAME          "MoonBase"   // 8 chars — fits 31-byte legacy adv payload alongside UUID128
+#define BLE_SERVICE_UUID        "4d4f4f4e-5348-4f54-4253-000000000000"  // ASCII: MOONSHOTBS
 #define BLE_TELEM_CHAR_UUID     "4d4f4f4e-5348-4f54-4253-000000000001"
 #define BLE_CMD_CHAR_UUID       "4d4f4f4e-5348-4f54-4253-000000000002"
 #define BLE_STATUS_CHAR_UUID    "4d4f4f4e-5348-4f54-4253-000000000003"
@@ -77,7 +79,6 @@ uint32_t highestNonce = 0;
 #define BLE_OTA_CHAR_UUID       "4d4f4f4e-5348-4f54-4253-000000000006"  // WRITE|WRITE_NR|NOTIFY
 
 NimBLEServer* bleServer = nullptr;
-NimBLEAdvertising* bleAdvert = nullptr;
 NimBLECharacteristic* bleTelemChar = nullptr;
 NimBLECharacteristic* bleCmdChar = nullptr;
 NimBLECharacteristic* bleStatusChar = nullptr;
@@ -878,7 +879,7 @@ void handleBleLogFetch() {
 // ===================== BLE INIT / DEINIT =====================
 
 void initBLE() {
-  NimBLEDevice::init(WIFI_SSID);
+  NimBLEDevice::init(BLE_DEVICE_NAME);
   NimBLEDevice::setPower(BLUETOOTH_POWER);
   NimBLEDevice::setMTU(517);
 
@@ -902,13 +903,52 @@ void initBLE() {
 
   svc->start();
 
-  bleAdvert = NimBLEDevice::getAdvertising();
-  bleAdvert->addServiceUUID(BLE_SERVICE_UUID);
-  bleAdvert->setName("NimBLE");
-  bleAdvert->enableScanResponse(true);
-  bleAdvert->setMinInterval(0x20);
-  bleAdvert->setMaxInterval(0x40);
-  bleAdvert->start();
+  // Instance 0: legacy PDU for Chrome/Web Bluetooth.
+  // Payload hand-built to exactly 31 bytes:
+  //   Flags (3) + Shortened Name "MoonBase"/8 chars (10) + UUID128 (18) = 31
+  {
+    NimBLEExtAdvertisement legacyAdv;
+    legacyAdv.setLegacyAdvertising(true);
+    legacyAdv.setConnectable(true);
+    legacyAdv.setPrimaryPhy(BLE_HCI_LE_PHY_1M);
+    legacyAdv.setSecondaryPhy(BLE_HCI_LE_PHY_1M);
+    legacyAdv.setMinInterval(BLE_ADV_INTERVAL);
+    legacyAdv.setMaxInterval(BLE_ADV_INTERVAL);
+
+    uint8_t payload[31];
+    uint8_t pos = 0;
+    payload[pos++] = 2; payload[pos++] = 0x01; payload[pos++] = 0x06;  // Flags: LE discoverable, no BR/EDR
+    const char* shortName = BLE_SHORT_NAME;
+    uint8_t nlen = strlen(shortName);
+    payload[pos++] = nlen + 1; payload[pos++] = 0x08;                  // Shortened Local Name
+    memcpy(&payload[pos], shortName, nlen); pos += nlen;
+    NimBLEUUID svcUuid(BLE_SERVICE_UUID);
+    const uint8_t* uuidBytes = svcUuid.getValue();
+    payload[pos++] = 17; payload[pos++] = 0x07;                        // Complete 128-bit UUIDs
+    memcpy(&payload[pos], uuidBytes, 16); pos += 16;
+    legacyAdv.setData(payload, pos);
+
+    NimBLEDevice::getAdvertising()->setInstanceData(0, legacyAdv);
+  }
+  NimBLEDevice::getAdvertising()->start(0);
+
+  // Instance 1: extended, Coded PHY — for Android / long-range.
+  // secondary_phy_opt left at 0 (no preference); controller defaults to S=8 for Coded PHY.
+  // Future: add relay telem data here as manufacturer-specific AD records.
+  {
+    NimBLEExtAdvertisement codedAdv;
+    codedAdv.setLegacyAdvertising(false);
+    codedAdv.setConnectable(true);
+    codedAdv.setPrimaryPhy(BLE_HCI_LE_PHY_CODED);
+    codedAdv.setSecondaryPhy(BLE_HCI_LE_PHY_CODED);
+    codedAdv.setMinInterval(BLE_ADV_INTERVAL);
+    codedAdv.setMaxInterval(BLE_ADV_INTERVAL);
+    codedAdv.addServiceUUID(BLE_SERVICE_UUID);
+    codedAdv.setName(BLE_DEVICE_NAME);
+
+    NimBLEDevice::getAdvertising()->setInstanceData(1, codedAdv);
+  }
+  NimBLEDevice::getAdvertising()->start(1);
 
   Serial.println("BLE GATT started");
 }
@@ -1027,7 +1067,6 @@ void setup() {
 
   Serial.println("=== Ready ===");
 
-  NimBLEDevice::getAdvertising()->setAdvertisingInterval(BLE_ADV_INTERVAL);
   esp_wifi_set_max_tx_power(20); //in 0.25dbm units low power wifi
   esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
   setCpuFrequencyMhz(160);

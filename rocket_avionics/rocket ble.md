@@ -39,7 +39,7 @@ this is multi core. use the overload of notify which takes a payload as input, n
 check the return from notify. we will attempt to queue packets faster than they can be sent, the return value gives us flow rate control when full
 for historical requests, fill every packet as many as will fit, then next cycle will add as many as will fit in the next packet. these pages are built as needed, no 4kb buffer, because they will still be available in logs to read next loop. whole records only (each has a length byte, and type, etc and normal params so can be decoded from a ground in a packet). for realtime, they won't necessarily be available next loop, since they aren't necessary logged, and might change by next time., usually they will all fit in a single packet, but if not, save the additional pages as a point in time, (max 4kb fixed buffer. this size may change in future) and send the remainder , drain whole records from the buffer to the next packet on the next loop, or when flow control allows. no additional new pages captured until they all send). overflow should still be whole records per packet.using this buffer implies either slightly bursty, or they have subscribed to more than flow control can fit. reduced rate, but all relevant pages from the same instant
 
-limit one user connected at a time. any new connection assumes the existing connection is broken. disconnect the existing user, clear any buffers/counters, set every page to be marked as fresh data, and start on the new connection. continue ble advertising while connected.default phy should be advertised only on legacy - nimble doesn't properly support dual advertising, so 1m advert, then negotiate to either 2M or coded phy, etc as appropriate.
+limit one user connected at a time. any new connection assumes the existing connection is broken. disconnect the existing user, clear any buffers/counters, set every page to be marked as fresh data, and start on the new connection. continue ble advertising while connected. two advertising instances run: instance 0 legacy 1M for Chrome (31-byte payload with flags+name+UUID), instance 1 extended Coded PHY for Android/long-range. On connect, server immediately negotiates Coded S=8 PHY for range; client can downgrade via connset char 0x03 if needed.
 initial subscription should begin sending 10hz of pages 1-13 (todo: how many pages are implemented? all the existing ones, not unimplemented Kalman.
 
 once a page is sent on a transport, clear the fresh flag. when any sensor updates anything relevant to that page, set the fresh flag. non-fresh pages aren't sent in reliable transport modes (ble counts as reliable. Lora counts as unreliable)
@@ -52,7 +52,7 @@ use a longish advertising period, to save battery, e.g. 1 second or more
 todo: do we need the connection controls to choose power level, or will ble do that automatically based on the signal quality?
 
 
-connection controls for ble should default to 1m, and automatically attempt renegotiate to 2M phy. and mtu 517.
+connection controls for ble default to Coded S=8 on connect (range over speed). mtu 517. client may request a different phy via connset char command 0x03 (e.g. 2M for log fetch speed).
 
 packets should only be filled with length-prefixed whole records, max 502 bytes. request an mtu of 517, but choosing only 502 max allows more LL segments to fit in the intermediate buffers (502 fills 2, 517 spills into a 3rd). use a constant/define for this limit, may be changed later
 

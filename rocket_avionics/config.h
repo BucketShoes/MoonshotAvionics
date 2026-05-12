@@ -64,7 +64,8 @@
 // ===================== BLE =====================
 
 #define BLE_DEVICE_NAME        "Moonshot-Rocket"
-#define BLE_SERVICE_UUID       "524f434b-4554-5354-424c-000000000000"
+#define BLE_SHORT_NAME         "Moonshot"    // 8 chars — fits 31-byte legacy adv payload alongside UUID128
+#define BLE_SERVICE_UUID       "524f434b-4554-5354-424c-000000000000"  // ASCII: ROCKET+ST+BL
 #define BLE_TELEM_CHAR_UUID    "524f434b-4554-5354-424c-000000000001"
 #define BLE_CMD_CHAR_UUID      "524f434b-4554-5354-424c-000000000002"
 #define BLE_STATUS_CHAR_UUID   "524f434b-4554-5354-424c-000000000003"

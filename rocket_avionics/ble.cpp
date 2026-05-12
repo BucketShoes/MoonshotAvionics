@@ -25,7 +25,6 @@ static NimBLECharacteristic* pStatusChar  = nullptr;
 static NimBLECharacteristic* pConnSetChar = nullptr;
 static NimBLECharacteristic* pFetchChar   = nullptr;
 static NimBLECharacteristic* pOtaChar     = nullptr;
-static NimBLEAdvertising*    pAdvert      = nullptr;
 
 // Per-fetch diagnostics (rocket-side) — reset on each new request via onWrite.
 static uint32_t rktFetchNotifyOk = 0, rktFetchNotifyDrop = 0, rktFetchBytesSent = 0;
@@ -104,8 +103,8 @@ class BleServerCB : public NimBLEServerCallbacks {
       logPages[i].freshMask |= FRESH_BLE;
     }
 
-    // Default: 2M PHY + fast connection interval
-    applyPhyParams(info.getConnHandle(), 1);
+    // Default: Coded S=8 PHY for range (client can downgrade via CONNSET char if needed)
+    applyPhyParams(info.getConnHandle(), 3);
 
     Serial.printf("BLE: connected. handle=%d interval=%.2fms\n",
       info.getConnHandle(), info.getConnInterval() * 1.25f);
@@ -407,12 +406,52 @@ void initBLE() {
 
   svc->start();
 
-  pAdvert = NimBLEDevice::getAdvertising();
-  pAdvert->addServiceUUID(BLE_SERVICE_UUID);
-  pAdvert->setName(BLE_DEVICE_NAME);
-  pAdvert->setMinInterval(BLE_ADV_INTERVAL);
-  pAdvert->setMaxInterval(BLE_ADV_INTERVAL);
-  pAdvert->start(0);
+  // Instance 0: legacy PDU for Chrome/Web Bluetooth.
+  // Payload hand-built to exactly 31 bytes:
+  //   Flags (3) + Shortened Name "Moonshot"/8 chars (10) + UUID128 (18) = 31
+  {
+    NimBLEExtAdvertisement legacyAdv;
+    legacyAdv.setLegacyAdvertising(true);
+    legacyAdv.setConnectable(true);
+    legacyAdv.setPrimaryPhy(BLE_HCI_LE_PHY_1M);
+    legacyAdv.setSecondaryPhy(BLE_HCI_LE_PHY_1M);
+    legacyAdv.setMinInterval(BLE_ADV_INTERVAL);
+    legacyAdv.setMaxInterval(BLE_ADV_INTERVAL);
+
+    uint8_t payload[31];
+    uint8_t pos = 0;
+    payload[pos++] = 2; payload[pos++] = 0x01; payload[pos++] = 0x06;  // Flags: LE discoverable, no BR/EDR
+    const char* shortName = BLE_SHORT_NAME;
+    uint8_t nlen = strlen(shortName);
+    payload[pos++] = nlen + 1; payload[pos++] = 0x08;                  // Shortened Local Name
+    memcpy(&payload[pos], shortName, nlen); pos += nlen;
+    NimBLEUUID svcUuid(BLE_SERVICE_UUID);
+    const uint8_t* uuidBytes = svcUuid.getValue();
+    payload[pos++] = 17; payload[pos++] = 0x07;                        // Complete 128-bit UUIDs
+    memcpy(&payload[pos], uuidBytes, 16); pos += 16;
+    legacyAdv.setData(payload, pos);
+
+    NimBLEDevice::getAdvertising()->setInstanceData(0, legacyAdv);
+  }
+  NimBLEDevice::getAdvertising()->start(0);
+
+  // Instance 1: extended, Coded PHY — for Android / long-range.
+  // secondary_phy_opt left at 0 (no preference); controller defaults to S=8 for Coded PHY.
+  // Future: add relay telem data here as manufacturer-specific AD records.
+  {
+    NimBLEExtAdvertisement codedAdv;
+    codedAdv.setLegacyAdvertising(false);
+    codedAdv.setConnectable(true);
+    codedAdv.setPrimaryPhy(BLE_HCI_LE_PHY_CODED);
+    codedAdv.setSecondaryPhy(BLE_HCI_LE_PHY_CODED);
+    codedAdv.setMinInterval(BLE_ADV_INTERVAL);
+    codedAdv.setMaxInterval(BLE_ADV_INTERVAL);
+    codedAdv.addServiceUUID(BLE_SERVICE_UUID);
+    codedAdv.setName(BLE_DEVICE_NAME);
+
+    NimBLEDevice::getAdvertising()->setInstanceData(1, codedAdv);
+  }
+  NimBLEDevice::getAdvertising()->start(1);
 
   Serial.println("BLE: initialised");
 }
@@ -622,10 +661,10 @@ static void bleFetchOnePdu() {
 // ===================== NON-BLOCKING BLE MAIN ENTRY =====================
 
 void nonblockingBle() {
-  // Keep advertising alive — NimBLE may stop it unexpectedly
-  if (pAdvert && !pAdvert->isAdvertising()) {
-    pAdvert->start(0);
-  }
+  // Keep both advertising instances alive — NimBLE may stop them on host sync events
+  NimBLEExtAdvertising* pExtAdv = NimBLEDevice::getAdvertising();
+  if (!pExtAdv->isActive(0)) pExtAdv->start(0);
+  if (!pExtAdv->isActive(1)) pExtAdv->start(1);
 
   if (!bleState.connected) return;
 

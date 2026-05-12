@@ -311,7 +311,7 @@ When we eventually combine services/chars, this will still be separate from the 
                                   bit N = include page type N (e.g. bit 1 = GPS Full 0x01)
                                   default: bits 1-13 set (all defined data pages)
       0x03 [phy u8]             — set PHY: 0=1M, 1=2M, 2=Coded-S2, 3=Coded-S8
-                                  default: 2M (1) on connect
+                                  default: Coded-S8 (3) on connect
 
   Char 0005 (WRITE WITH RESPONSE | NOTIFY) — Log fetch
     Same request/response format as base station char 0004, but records are in
@@ -330,9 +330,11 @@ TODO: it should also include the logged snr/rssi, same as base station does - al
   MTU: negotiate 517, but limit notification payloads to BLE_MAX_PDU (502 bytes).
     Rationale: 502 bytes fits in two LL segments; 517 spills into a third.
 
-  PHY: advertise on legacy 1M only (NimBLE dual advertising not fully supported).
-    On connect: attempt to negotiate 2M PHY. Default PHY for historical log fetch is 2M.
-    Coded PHY S8 is available via char 0004 command 0x03 (lower throughput, longer range — intended for in-flight realtime telemetry).
+  PHY: two advertising instances run simultaneously:
+    Instance 0: legacy 1M PDU (for Chrome/Web Bluetooth — 31-byte payload limit).
+    Instance 1: extended Coded PHY (for Android / long-range; 254-byte payload available for future relay data).
+    On connect: negotiate Coded S=8 by default (range over speed). Client can request a different PHY
+    via char 0004 command 0x03 if needed (e.g. 2M for log fetch speed).
 
   Advertising interval: ~1 second (to conserve battery).
 
