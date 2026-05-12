@@ -418,11 +418,12 @@ void initBLE() {
     legacyAdv.setMinInterval(BLE_ADV_INTERVAL);
     legacyAdv.setMaxInterval(BLE_ADV_INTERVAL);
 
+    static_assert(sizeof(BLE_SHORT_NAME) - 1 == 8, "BLE_SHORT_NAME must be exactly 8 chars to fit 31-byte legacy adv payload");
     uint8_t payload[31];
     uint8_t pos = 0;
     payload[pos++] = 2; payload[pos++] = 0x01; payload[pos++] = 0x06;  // Flags: LE discoverable, no BR/EDR
     const char* shortName = BLE_SHORT_NAME;
-    uint8_t nlen = strlen(shortName);
+    uint8_t nlen = sizeof(BLE_SHORT_NAME) - 1;  // compile-time constant, no strlen needed
     payload[pos++] = nlen + 1; payload[pos++] = 0x08;                  // Shortened Local Name
     memcpy(&payload[pos], shortName, nlen); pos += nlen;
     NimBLEUUID svcUuid(BLE_SERVICE_UUID);

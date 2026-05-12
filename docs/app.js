@@ -2749,10 +2749,10 @@ function initCharts() {
 
     // Build page mask checkboxes (pages 1-16)
     (function() {
-      var PAGE_NAMES = {1:'GPS Full',2:'Baro',3:'Mag',4:'Accel',5:'Gyro',6:'GPS Ext',7:'Kalman',8:'System',9:'Peaks',10:'Cmd Ack',11:'Flight',12:'Radio',13:'Time',14:'Thrust Curve'};
+      var PAGE_NAMES = {1:'GPS Full',2:'Baro',3:'Mag',4:'Accel',5:'Gyro',6:'GPS Ext',7:'Kalman',8:'System',9:'Peaks',10:'Cmd Ack',11:'Flight',12:'Radio',13:'Time',14:'Thrust Curve',15:'Pyro'};
       // Pages checked by default: 1-13 (matches BLE_DEFAULT_PAGE_MASK bits 1-13).
       // Page 14 (Thrust Curve) is unchecked by default — must be explicitly subscribed.
-      var DEFAULT_CHECKED = {1:1,2:1,3:1,4:1,5:1,6:1,7:1,8:1,9:1,10:1,11:1,12:1,13:1};
+      var DEFAULT_CHECKED = {1:1,2:1,3:1,4:1,5:1,6:1,7:1,8:1,9:1,10:1,11:1,12:1,13:1,15:1};
       var g = document.getElementById('rkt-mask-grid');
       var h = '';
       for (var i = 1; i <= 16; i++) {
