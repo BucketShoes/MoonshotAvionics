@@ -12,7 +12,6 @@
 #include "log_store.h"
 #include "esp_wifi.h"
 #include "radio.h"
-#include "ble_proxy.h"
 //#include "tagged_serial.h"  // Serial wrapper that prefixes boot-relative micros
 
 #define VEXT_CTRL_PIN 3
@@ -44,14 +43,8 @@ unsigned long bootMicros = 0;
 #define TRANSPORT_USB   0x04  // reserved for future
 #define TRANSPORT_ALL   (TRANSPORT_WIFI | TRANSPORT_BLE | TRANSPORT_USB)
 
-
-#ifndef BS_WIFI_DEFAULT_ON
-#define BS_WIFI_DEFAULT_ON 0
-#endif
-bool wifiEnabled = BS_WIFI_DEFAULT_ON;
+bool wifiEnabled = true;
 bool bleEnabled = true;
-
-#define BLE_ADV_INTERVAL 1000 // 0.625ms units
 
 // ===================== HARDWARE =====================
 
@@ -84,16 +77,11 @@ uint32_t highestNonce = 0;
 NimBLEServer* bleServer = nullptr;
 NimBLEAdvertising* bleAdvert = nullptr;
 NimBLECharacteristic* bleTelemChar = nullptr;
-// Connection handle of the client subscribed to bleTelemChar. 0xFFFF = none.
-// Tracked via onSubscribe so we only notify the right connection, not every
-// peer on the server (proxy phone connects too but subscribes a different char).
-static uint16_t bleTelemSubHandle = 0xFFFF;
 NimBLECharacteristic* bleCmdChar = nullptr;
 NimBLECharacteristic* bleStatusChar = nullptr;
 NimBLECharacteristic* bleLogFetchChar = nullptr;
 NimBLECharacteristic* bleOtaChar = nullptr;
 bool bleClientConnected = false;
-uint16_t bleClientConnHandle = 0xFFFF;  // conn handle of the base station service client
 
 // ===================== OTA STATE MACHINE =====================
 #define OTA_STATUS_OK            0x00
@@ -362,8 +350,8 @@ void pushToAllTransports(const uint8_t* wsBuf, size_t wsLen) {
   if (wifiEnabled) {
     ws.binaryAll(wsBuf, wsLen);
   }
-  if (bleEnabled && bleTelemChar && bleTelemSubHandle != 0xFFFF) {
-    //bleTelemChar->notify((uint8_t*)wsBuf, wsLen, bleTelemSubHandle); //TODO: @@@@@ re-enble push
+  if (bleEnabled && bleClientConnected && bleTelemChar) {
+    bleTelemChar->notify((uint8_t*)wsBuf, wsLen);
   }
 }
 
@@ -705,29 +693,15 @@ void onWsEvent(AsyncWebSocket *s, AsyncWebSocketClient *c, AwsEventType t, void 
 
 // ===================== BLE CALLBACKS =====================
 
-class BleTelemSubCallbacks : public NimBLECharacteristicCallbacks {
-  void onSubscribe(NimBLECharacteristic* chr, NimBLEConnInfo& connInfo, uint16_t subValue) override {
-    uint16_t handle = connInfo.getConnHandle();
-    if (subValue == 0) {
-      if (handle == bleTelemSubHandle) bleTelemSubHandle = 0xFFFF;
-    } else {
-      bleTelemSubHandle = handle;
-    }
-    Serial.printf("BLE telem sub handle=%u subValue=%u\n", handle, subValue);
-  }
-};
-
 class BleServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer* server, NimBLEConnInfo& connInfo) override {
     bleClientConnected = true;
-    bleProxyOnServerConnect(connInfo.getConnHandle());
     Serial.print("BLE+ addr:"); Serial.println(connInfo.getAddress().toString().c_str());
+    //TODO: @@@ force 2m phy
   }
   void onDisconnect(NimBLEServer* server, NimBLEConnInfo& connInfo, int reason) override {
     bleClientConnected = false;
     bleLogFetch.active = false;
-    if (connInfo.getConnHandle() == bleTelemSubHandle) bleTelemSubHandle = 0xFFFF;
-    bleProxyOnServerDisconnect(connInfo.getConnHandle());
     Serial.print("BLE- reason:"); Serial.println(reason);
     NimBLEDevice::startAdvertising();
   }
@@ -903,7 +877,7 @@ void handleBleLogFetch() {
 
 void initBLE() {
   NimBLEDevice::init(WIFI_SSID);
-  NimBLEDevice::setPower(BLUETOOTH_POWER);  // +9 dBm — max for ESP-to-ESP range test
+  NimBLEDevice::setPower(ESP_PWR_LVL_P3);  // +3 dBm — pocket range is plenty
   NimBLEDevice::setMTU(517);
 
   bleServer = NimBLEDevice::createServer();
@@ -912,7 +886,6 @@ void initBLE() {
   NimBLEService* svc = bleServer->createService(BLE_SERVICE_UUID);
 
   bleTelemChar = svc->createCharacteristic(BLE_TELEM_CHAR_UUID, NIMBLE_PROPERTY::NOTIFY);
-  bleTelemChar->setCallbacks(new BleTelemSubCallbacks());
   bleCmdChar = svc->createCharacteristic(BLE_CMD_CHAR_UUID, NIMBLE_PROPERTY::WRITE);
   bleCmdChar->setCallbacks(new BleCmdCallbacks());
   bleStatusChar = svc->createCharacteristic(BLE_STATUS_CHAR_UUID, NIMBLE_PROPERTY::READ);
@@ -927,10 +900,13 @@ void initBLE() {
 
   svc->start();
 
-  // Advertising is owned by bleProxyInit() — it sets name, UUIDs, and starts it.
-  // The base station service is still connectable; it just won't be in the advert
-  // packet while the proxy is active.
   bleAdvert = NimBLEDevice::getAdvertising();
+  bleAdvert->addServiceUUID(BLE_SERVICE_UUID);
+  bleAdvert->setName("NimBLE");
+  bleAdvert->enableScanResponse(true);
+  bleAdvert->setMinInterval(0x20);
+  bleAdvert->setMaxInterval(0x40);
+  bleAdvert->start();
 
   Serial.println("BLE GATT started");
 }
@@ -959,8 +935,6 @@ void setup() {
   Serial.println("\n=== Rocket Base Station ===");
 
   initBLE();
-  bleProxyLedPin = LED_PIN;
-  bleProxyInit();
 
   ledcAttach(LED_PIN, 1000, 11);
   ledcWrite(LED_PIN, 50);
@@ -1001,50 +975,42 @@ void setup() {
   Serial.print(" pwr="); Serial.println(activePower);
   Serial.print("Device ID: "); Serial.println(DEVICE_ID);
 
-  // WiFi AP — off by default (BS_WIFI_DEFAULT_ON=0) to reduce BLE coex interference.
-  // Set BS_WIFI_DEFAULT_ON=1 in build_flags to restore for web dashboard use.
-  if (wifiEnabled) {
-    Serial.println("WiFi: setting mode...");
-    WiFi.mode(WIFI_AP);
-    Serial.println("WiFi: starting softAP...");
-    bool apOk = WiFi.softAP(WIFI_SSID, WIFI_PASS, WIFI_CHANNEL);
-    Serial.print("WiFi: softAP result="); Serial.println(apOk);
-    Serial.print("AP: "); Serial.println(WiFi.softAPIP());
-  } else {
-    Serial.println("WiFi: disabled (BS_WIFI_DEFAULT_ON=0)");
-    WiFi.mode(WIFI_OFF);
-  }
+  // WiFi AP
+  Serial.println("WiFi: setting mode...");
+  WiFi.mode(WIFI_AP);
+  Serial.println("WiFi: starting softAP...");
+  bool apOk = WiFi.softAP(WIFI_SSID, WIFI_PASS, WIFI_CHANNEL);
+  Serial.print("WiFi: softAP result="); Serial.println(apOk);
+  Serial.print("AP: "); Serial.println(WiFi.softAPIP());
 
-  if (wifiEnabled) {
-    httpServer.on("/", HTTP_GET, [](AsyncWebServerRequest *r){
-      Serial.println("HTTP GET /");
-      AsyncWebServerResponse *resp = r->beginResponse(LittleFS, "/index.html.gz", "text/html");
-      if (!resp) { r->send(503, "text/plain", "LittleFS not mounted"); return; }
-      resp->addHeader("Content-Encoding", "gzip");
-      r->send(resp);
-    });
-    httpServer.on("/style.css", HTTP_GET, [](AsyncWebServerRequest *r){
-      AsyncWebServerResponse *resp = r->beginResponse(LittleFS, "/style.css.gz", "text/css");
-      if (!resp) { r->send(503, "text/plain", "LittleFS not mounted"); return; }
-      resp->addHeader("Content-Encoding", "gzip");
-      r->send(resp);
-    });
-    httpServer.on("/app.js", HTTP_GET, [](AsyncWebServerRequest *r){
-      AsyncWebServerResponse *resp = r->beginResponse(LittleFS, "/app.js.gz", "application/javascript");
-      if (!resp) { r->send(503, "text/plain", "LittleFS not mounted"); return; }
-      resp->addHeader("Content-Encoding", "gzip");
-      r->send(resp);
-    });
-    httpServer.on("/api/status", HTTP_GET, handleApiStatus);
-    httpServer.on("/api/logs", HTTP_GET, handleApiLogs);
-    httpServer.on("/api/command", HTTP_POST,
-      [](AsyncWebServerRequest *req){ }, NULL, handleApiCommand);
-    httpServer.on("/api/ota/chunk", HTTP_PUT,
-      [](AsyncWebServerRequest *req){ }, NULL, handleApiOtaChunk);
-    ws.onEvent(onWsEvent);
-    httpServer.addHandler(&ws);
-    httpServer.begin();
-  }
+  httpServer.on("/", HTTP_GET, [](AsyncWebServerRequest *r){
+    Serial.println("HTTP GET /");
+    AsyncWebServerResponse *resp = r->beginResponse(LittleFS, "/index.html.gz", "text/html");
+    if (!resp) { r->send(503, "text/plain", "LittleFS not mounted"); return; }
+    resp->addHeader("Content-Encoding", "gzip");
+    r->send(resp);
+  });
+  httpServer.on("/style.css", HTTP_GET, [](AsyncWebServerRequest *r){
+    AsyncWebServerResponse *resp = r->beginResponse(LittleFS, "/style.css.gz", "text/css");
+    if (!resp) { r->send(503, "text/plain", "LittleFS not mounted"); return; }
+    resp->addHeader("Content-Encoding", "gzip");
+    r->send(resp);
+  });
+  httpServer.on("/app.js", HTTP_GET, [](AsyncWebServerRequest *r){
+    AsyncWebServerResponse *resp = r->beginResponse(LittleFS, "/app.js.gz", "application/javascript");
+    if (!resp) { r->send(503, "text/plain", "LittleFS not mounted"); return; }
+    resp->addHeader("Content-Encoding", "gzip");
+    r->send(resp);
+  });
+  httpServer.on("/api/status", HTTP_GET, handleApiStatus);
+  httpServer.on("/api/logs", HTTP_GET, handleApiLogs);
+  httpServer.on("/api/command", HTTP_POST,
+    [](AsyncWebServerRequest *req){ }, NULL, handleApiCommand);
+  httpServer.on("/api/ota/chunk", HTTP_PUT,
+    [](AsyncWebServerRequest *req){ }, NULL, handleApiOtaChunk);
+  ws.onEvent(onWsEvent);
+  httpServer.addHandler(&ws);
+  httpServer.begin();
 
   // LoRa
   bsLoraSPI.begin(LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN, LORA_NSS_PIN);
@@ -1059,11 +1025,9 @@ void setup() {
 
   Serial.println("=== Ready ===");
 
-  NimBLEDevice::getAdvertising()->setAdvertisingInterval(BLE_ADV_INTERVAL);
-  if (wifiEnabled) {
-    esp_wifi_set_max_tx_power(20); //in 0.25dbm units. 
-    esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
-  }
+  NimBLEDevice::getAdvertising()->setAdvertisingInterval(1600);
+  esp_wifi_set_max_tx_power(20);
+  esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
   setCpuFrequencyMhz(160);
 }
 
@@ -1083,7 +1047,6 @@ void loop() {
   }
 
   handleBleLogFetch();
-  bleProxyLoop();
 
   // OTA notify drain
   if (bsOta.notifyPending && bleOtaChar && bleClientConnected) {
