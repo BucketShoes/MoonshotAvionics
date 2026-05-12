@@ -415,8 +415,8 @@ void initBLE() {
     legacyAdv.setConnectable(true);
     legacyAdv.setPrimaryPhy(BLE_HCI_LE_PHY_1M);
     legacyAdv.setSecondaryPhy(BLE_HCI_LE_PHY_1M);
-    legacyAdv.setMinInterval(BLE_ADV_INTERVAL);
-    legacyAdv.setMaxInterval(BLE_ADV_INTERVAL);
+    legacyAdv.setMinInterval(BLE_ADV_INTERVAL_MIN);
+    legacyAdv.setMaxInterval(BLE_ADV_INTERVAL_MAX);
 
     static_assert(sizeof(BLE_SHORT_NAME) - 1 == 8, "BLE_SHORT_NAME must be exactly 8 chars to fit 31-byte legacy adv payload");
     uint8_t payload[31];
@@ -445,8 +445,8 @@ void initBLE() {
     codedAdv.setConnectable(true);
     codedAdv.setPrimaryPhy(BLE_HCI_LE_PHY_CODED);
     codedAdv.setSecondaryPhy(BLE_HCI_LE_PHY_CODED);
-    codedAdv.setMinInterval(BLE_ADV_INTERVAL);
-    codedAdv.setMaxInterval(BLE_ADV_INTERVAL);
+    codedAdv.setMinInterval(BLE_ADV_INTERVAL_MIN);
+    codedAdv.setMaxInterval(BLE_ADV_INTERVAL_MAX);
     codedAdv.addServiceUUID(BLE_SERVICE_UUID);
     codedAdv.setName(BLE_DEVICE_NAME);
 

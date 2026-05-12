@@ -80,12 +80,12 @@
 #define BLE_LOGFETCH_MAX_PDU   514
 #define BLE_FETCH_VERBOSE      1
 
-#define BLE_ADV_INTERVAL       1000
+
 
 #define BLE_CI_FAST_MIN        6
 #define BLE_CI_FAST_MAX        6
 #define BLE_CI_FAST_LATENCY    0
-#define BLE_CI_FAST_TIMEOUT    800
+#define BLE_CI_FAST_TIMEOUT    1600
 
 #define BLE_CI_SLOW_MIN        24
 #define BLE_CI_SLOW_MAX        40

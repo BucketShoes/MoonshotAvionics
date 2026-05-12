@@ -100,7 +100,15 @@
 #define ROCKET_NO_BASE_HEARD_THRESHOLD_US  130'000'000UL
 
 
+
+
+
+
+
+//TODO: move these to common/ble config or general config or something
 #define BLUETOOTH_POWER ESP_PWR_LVL_P9
+#define BLE_ADV_INTERVAL_MIN       750// 0.625ms units
+#define BLE_ADV_INTERVAL_MAX       1000// 0.625ms units
 
 
 #endif // COMMON_RADIO_CONFIG_H
