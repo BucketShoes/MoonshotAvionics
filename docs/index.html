@@ -34,7 +34,6 @@ document.write('<link rel="stylesheet" href="style.css?_='+Date.now()+'">');
   <div class="si"><div class="dot dd" id="dot-rktble"></div><span class="sl">RktBLE:</span><span class="sv" id="val-rktble">off</span></div>
   <button id="btn-rktble" style="background:#353;color:#8fa;border:1px solid #585;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer">Rkt BLE</button>
   <div class="si"><span class="sl">RktFlash#:</span><span class="sv" id="val-rktlogrec">?</span></div>
-  <div class="si" id="si-rkt-preerase" style="display:none"><span class="sl">PreErase:</span><span class="sv" id="val-rkt-preerase">?</span></div>
   <div id="val-rkt-proxy-info" style="font-size:11px;color:#a8c;width:100%;margin-top:2px;display:block">b</div>
   <button id="btn-rkt-settings" style="background:#333;color:#aaa;border:1px solid #555;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer">Settings &#9660;</button>
 </div>
@@ -211,7 +210,6 @@ document.write('<link rel="stylesheet" href="style.css?_='+Date.now()+'">');
         <option selected="selected" value="0x40">0x40 PING</option>
         <option value="0xF0">0xF0 REBOOT</option>
         <option value="0xF1">0xF1 LOG ERASE</option>
-        <option value="0xF2">0xF2 LOG PRE-ERASE</option>
       </optgroup>
       <optgroup label="OTA">
         <option value="0x50">0x50 OTA BEGIN</option>
@@ -295,14 +293,6 @@ document.write('<link rel="stylesheet" href="style.css?_='+Date.now()+'">');
       <label>DL SF:</label><input type="number" id="p20-sf" value="5" min="5" max="12">
       <label>DL BW:</label><select id="p20-bw"><option value="0" selected>0 LoRa 500kHz</option><option value="1">1 LoRa 250kHz</option><option value="2">2 LoRa 125kHz</option><option value="3">3 LoRa 62.5kHz</option><option value="4">4 LoRa 41.7kHz</option><option value="5">5 LoRa 31.25kHz</option><option value="6">6 LoRa 20.8kHz</option><option value="7">7 LoRa 15.6kHz</option><option value="8">8 LoRa 10.4kHz</option><option value="9">9 LoRa 7.8kHz</option><option value="16">16 FSK 467kHz</option></select>
       <label>DL Pwr:</label><input type="number" id="p20-pwr" value="-9" min="-9" max="22">
-    </div>
-  </div>
-
-  <div class="cmd-params" id="params-0xF2">
-    <div class="cmd-row">
-      <label>Max sectors:</label>
-      <input type="number" id="pF2-maxsec" value="1536" min="1" style="width:80px">
-      <span style="color:#aaa">(4KB each; blank = all free; 1536 = 6MB ring)</span>
     </div>
   </div>
 

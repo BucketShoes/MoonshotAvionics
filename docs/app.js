@@ -1219,12 +1219,6 @@ function initCharts() {
       if (typeof s.logIdx === 'number') {
         document.getElementById('val-rktlogrec').textContent = s.logIdx;
       }
-      if (typeof s.preD === 'number' && s.preD > 0) {
-        document.getElementById('si-rkt-preerase').style.display = '';
-        document.getElementById('val-rkt-preerase').textContent = Math.round(s.preD / 1024) + 'kb';
-      } else {
-        document.getElementById('si-rkt-preerase').style.display = 'none';
-      }
       if (typeof s.batt === 'number') { updateRktBatt(s.batt); }
       // Sync rocket boot clock for correct x-axis on charts
       if (typeof s.uptime === 'number') {
@@ -1668,8 +1662,7 @@ function initCharts() {
     '0x41': 'SET SYNC: REMOVED in RadioLib rewrite (no slot machine).',
     '0x60': 'LR LISTEN (target=base): switch base station to SF12 implicit-header RX for the given window. While listening, base does NOT receive normal telem. 0=cancel.',
     '0xF0': 'REBOOT: Software restart. Refused if armed (rocket).',
-    '0xF1': 'LOG ERASE: Full wipe of log ring buffer. Resets virtual counters to 0 and reboots. Refused if armed.',
-    '0xF2': 'LOG PRE-ERASE: Pre-erase free data and index sectors ahead of current write position, up to the protection point (or full ring if no protection). Params: uint32 maxSectors (blank=all free; 1536=6MB ring). Refused if armed. Blocks device for several seconds. Eliminates runtime sector-erase stalls during logging.',
+    '0xF1': 'LOG ERASE: Clear log ring buffer. Refused if armed.',
     '0x50': 'OTA BEGIN: Open firmware update session. Erases inactive OTA partition (~2s). Refused while armed or rollback pending.',
     '0x52': 'OTA CONFIRM: After rebooting into new firmware, confirm it is good. Cancels rollback. If never sent, next reboot reverts to previous firmware.'
   };
@@ -1797,13 +1790,6 @@ function initCharts() {
         // LR LISTEN: uint16 durationMs (LE). Target=base station device id.
         var ms = parseInt(document.getElementById('p60-ms').value) & 0xFFFF;
         buf.push(ms & 0xFF, (ms >> 8) & 0xFF);
-        break;
-      }
-      case 0xF2: {
-        // LOG PRE-ERASE: uint32 maxSectors (LE). Blank = all free (0xFFFFFFFF).
-        var raw = document.getElementById('pF2-maxsec').value.trim();
-        var maxSec = (raw === '' || isNaN(parseInt(raw))) ? 0xFFFFFFFF : (parseInt(raw) >>> 0);
-        buf.push(maxSec & 0xFF, (maxSec >> 8) & 0xFF, (maxSec >> 16) & 0xFF, (maxSec >>> 24) & 0xFF);
         break;
       }
     }
