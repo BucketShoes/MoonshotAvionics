@@ -54,8 +54,10 @@ public:
     return true;
   }
 
+  // Full wipe: erase everything, reset all counters, then reboot.
   void eraseLogs() {
     if (!dataPart_ || !indexPart_) return;
+    erasing_ = true;  // block any concurrent writeRecord() calls
     Serial.print("LogStore eraseLogs...");
     esp_partition_erase_range(indexPart_, 0, indexPart_->size);
     for (uint32_t off = 0; off < dataPart_->size; off += 65536) {
@@ -76,9 +78,11 @@ public:
       nvs_.remove("log_prot");
     }
     Serial.println(" done");
+    ESP.restart(); //log index 0 should start with low uptime or its confusing
   }
 
   bool isReady() const { return dataPart_ != nullptr && indexPart_ != nullptr; }
+  bool isErasing() const { return erasing_; }
 
   // Set log protection point at the current write position.
   // The ring buffer will refuse to overwrite data at or after this point.
@@ -109,6 +113,7 @@ public:
     if (payloadLen > LOG_MAX_PAYLOAD || payloadLen == 0) return -1;
     if (virtualPos_ >= 0xFFFF0000UL || recordCounter_ >= 0xFFFFFFF0UL) return -1;
     if (logFull_) return -1;
+    if (erasing_) return -1;
 
     bool dbg = (writesSinceBoot_ < 3);
     uint16_t totalSize = LOG_HDR_SIZE + payloadLen;
@@ -148,7 +153,13 @@ public:
         Serial.print("  sector advance -> 0x"); Serial.print(newSector, HEX);
         Serial.print(" erase-ahead 0x"); Serial.println(aheadSector, HEX);
       }
-      esp_partition_erase_range(dataPart_, aheadSector, SECTOR_SIZE);
+      bool skipErase = false;
+      uint8_t fb;
+      esp_partition_read(dataPart_, aheadSector, &fb, 1);
+      skipErase = (fb == LOG_ERASED_MARKER);
+      if (!skipErase) {
+        esp_partition_erase_range(dataPart_, aheadSector, SECTOR_SIZE);
+      }
       currentSector_ = newSector;
     }
 
@@ -261,26 +272,43 @@ public:
     return (int)totalSize;
   }
 
+  // ===================== SEQUENTIAL CURSOR =====================
+  // SeqReader allows reading a contiguous run of records in O(1) per record
+  // instead of O(offset-within-chunk) per record that readRecord() requires.
+  // Usage:
+  //   LogStore::SeqReader r = logStore.seqReader(startRec);
+  //   while (r.hasMore()) {
+  //     int len = r.readNext(buf, sizeof(buf), &snr, &ts);
+  //     if (len < 0) break;  // error or end
+  //   }
   struct SeqReader {
     LogStore* store;
-    uint32_t  recIdx;
-    uint32_t  endRec;
-    uint32_t  scanPos;
-    bool      valid;
+    uint32_t  recIdx;     // record number of next record to read
+    uint32_t  endRec;     // exclusive end (don't read recIdx >= endRec)
+    uint32_t  scanPos;    // virtual position of the next record in the data partition
+    bool      valid;      // false if initialisation failed
 
     bool hasMore() const { return valid && recIdx < endRec; }
     uint32_t currentRec() const { return recIdx; }
 
+    // Read the next record into payloadBuf. Returns payload length or -1 on error.
     int readNext(uint8_t* payloadBuf, size_t bufSize, int8_t* snrOut, uint32_t* tsOut) {
       if (!valid || recIdx >= endRec) return -1;
+
       uint8_t hdr[LOG_HDR_SIZE];
       store->readBytes(scanPos, hdr, LOG_HDR_SIZE);
       uint8_t pLen = hdr[0];
-      if (pLen == LOG_ERASED_MARKER || pLen == 0 || pLen > LOG_MAX_PAYLOAD) { valid = false; return -1; }
+      if (pLen == LOG_ERASED_MARKER || pLen == 0 || pLen > LOG_MAX_PAYLOAD) {
+        valid = false;
+        return -1;
+      }
       if (pLen > bufSize) { valid = false; return -1; }
+
       *snrOut = (int8_t)hdr[1];
       *tsOut  = hdr[2] | ((uint32_t)hdr[3]<<8) | ((uint32_t)hdr[4]<<16) | ((uint32_t)hdr[5]<<24);
       store->readBytes(scanPos + LOG_HDR_SIZE, payloadBuf, pLen);
+
+      // Advance cursor to next record
       scanPos += LOG_HDR_SIZE + pLen;
       scanPos  = store->skipGap(scanPos);
       recIdx++;
@@ -288,25 +316,35 @@ public:
     }
   };
 
+  // Create a SeqReader starting at startRec, reading up to endRec (exclusive).
+  // endRec defaults to the current record counter if 0.
   SeqReader seqReader(uint32_t startRec, uint32_t endRec = 0) {
     SeqReader r;
-    r.store = this; r.recIdx = startRec;
-    r.endRec = (endRec == 0) ? recordCounter_ : endRec;
-    r.valid = false;
+    r.store   = this;
+    r.recIdx  = startRec;
+    r.endRec  = (endRec == 0) ? recordCounter_ : endRec;
+    r.valid   = false;
+
     if (!isReady() || startRec >= recordCounter_) return r;
+
+    // Locate the chunk boundary for startRec
     uint32_t slot = (startRec / CHUNK_SIZE) % maxIndexEntries_;
     uint32_t chunkVP = readIndexEntry(slot);
     if (chunkVP == INDEX_ERASED) return r;
     if (virtualPos_ > ringSize_ && chunkVP < (virtualPos_ - ringSize_)) return r;
+
+    // Scan from chunk boundary to the target record (one-time cost, then O(1) per step)
     uint32_t scanPos = chunkVP;
-    uint32_t target = startRec % CHUNK_SIZE;
+    uint32_t target  = startRec % CHUNK_SIZE;
     for (uint32_t i = 0; i < target; i++) {
       uint8_t len = readByte(scanPos);
       if (len == LOG_ERASED_MARKER || len == 0 || len > LOG_MAX_PAYLOAD) return r;
       scanPos += LOG_HDR_SIZE + len;
       scanPos = skipGap(scanPos);
     }
-    r.scanPos = scanPos; r.valid = true;
+
+    r.scanPos = scanPos;
+    r.valid   = true;
     return r;
   }
 
@@ -343,6 +381,7 @@ private:
   uint32_t writesSinceBoot_ = 0;
   uint32_t protectionVpos_ = 0;  // 0 = no protection; >0 = don't overwrite past here
   bool logFull_ = false;         // set when protection point blocks further writes
+  bool erasing_ = false;         // set during eraseLogs()/preEraseLogs(); blocks writes + arming
 
   uint32_t physSector(uint32_t vAddr) {
     return ((vAddr % ringSize_) / SECTOR_SIZE) * SECTOR_SIZE;
