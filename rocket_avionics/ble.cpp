@@ -187,15 +187,20 @@ class BleStatusCB : public NimBLECharacteristicCallbacks {
   void onRead(NimBLECharacteristic* c, NimBLEConnInfo& info) override {
     BLE_CB_START();
 
-    char buf[128];
+    char buf[192];
     uint32_t logIdx = logStoreOk ? logStore.getRecordCounter() : 0;
+    uint32_t preD   = logStoreOk ? logStore.getPreErasedDataToVpos() : 0;
+    uint32_t preI   = logStoreOk ? logStore.getPreErasedIdxToRec()   : 0;
     snprintf(buf, sizeof(buf),
-      "{\"logIdx\":%lu,\"batt\":%u,\"armed\":%d,\"uptime\":%lu,\"nonce\":%lu}",
+      "{\"logIdx\":%lu,\"batt\":%u,\"armed\":%d,\"uptime\":%lu,\"nonce\":%lu"
+      ",\"preD\":%lu,\"preI\":%lu}",
       (unsigned long)logIdx,
       (unsigned)batteryMv,
       isArmed ? 1 : 0,
       (unsigned long)(millis() / 1000UL),
-      (unsigned long)highestNonce);
+      (unsigned long)highestNonce,
+      (unsigned long)preD,
+      (unsigned long)preI);
 
     c->setValue((uint8_t*)buf, strlen(buf));
 

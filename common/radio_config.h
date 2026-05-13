@@ -80,6 +80,7 @@
                                  // base whose DEVICE_ID matches the packet target.
 #define CMD_REBOOT        0xF0
 #define CMD_LOG_ERASE     0xF1
+#define CMD_LOG_PRE_ERASE 0xF2  // Pre-erase free sectors; 4-byte payload: uint32 maxSectors (0xFFFFFFFF=all)
 
 // ===================== COMMAND ACK CODES =====================
 

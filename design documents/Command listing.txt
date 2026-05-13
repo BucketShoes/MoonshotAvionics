@@ -128,7 +128,13 @@ Commands for any device type (rockets and bases/relays both handle):
 
 0xF1  LOG ERASE
       Params: none
-      Effect: resets log ring buffer — clears log index/log data partitions, resets record counter to 0. (This is needed before 4gb of log writes, otherwise logging stops). Only logs are cleared, config is kept as-is.
+      Effect: full wipe — erases entire log data and index partitions, resets all virtual counters (including record counter and virtual byte position) to 0, clears all log NVS keys, then calls ESP.restart(). Reboot is required because virtual counters cannot safely reset to 0 in-place while index state from the old pass is still in flash. (This is needed before 4GB of cumulative log writes, otherwise logging stops. At current log rates this is months to years of data, ~1% of NOR flash wear lifetime for a 6MB ring.)
+      Only log-related NVS keys are cleared; other device config is kept.
+      Refused if armed (rocket). Device reboots on success — no ACK is sent.
+
+0xF2  LOG PRE-ERASE
+      Params: uint32 maxSectors (4 bytes, little-endian). 0xFFFFFFFF = no limit (erase all free sectors).
+      Effect: pre-erases free data sectors and free index sectors in the ring ahead of the current write position, up to maxSectors sectors or the protection point (whichever comes first). If no protection point is set, erases all the way around the ring back to the current sector. Sectors holding data between the protection point and current write position are not touched. Eliminates runtime 20+ms sector-erase stalls during flight logging (a sector is normally erased inline when the write pointer crosses each 4KB boundary). After pre-erase, writeRecord() skips inline erases until the pre-erased space is consumed. Two NVS keys track progress across reboots: log_pred (virtual byte pos up to which data sectors are pre-erased) and log_prei (record number up to which index sectors are pre-erased).
       Refused if armed (rocket).
 
 0x50  OTA BEGIN

@@ -71,6 +71,7 @@ static int expectedParamLen(uint8_t cmdId) {
     case CMD_PING:          return 0;
     case CMD_REBOOT:        return 0;
     case CMD_LOG_ERASE:     return 0;
+    case CMD_LOG_PRE_ERASE: return 4;   // uint32 maxSectors (LE)
     default:                return -1;
   }
 }
@@ -93,6 +94,7 @@ void executeCommand(uint8_t cmdId, uint32_t nonce, const uint8_t* params, size_t
 
     case CMD_ARM: {
       if (paramsLen != 0 && paramsLen != 9 && paramsLen != 13) { result = CMD_ERR_BAD_PARAMS; break; }
+      if (logStoreOk && logStore.isErasing()) { result = CMD_ERR_REFUSED; break; }
       uint8_t armResult = flightTryArm(params, paramsLen);
       if (armResult == ARM_OK) {
         if (logStoreOk) {
@@ -215,6 +217,16 @@ void executeCommand(uint8_t cmdId, uint32_t nonce, const uint8_t* params, size_t
       if (isArmed)     { result = CMD_ERR_REFUSED; break; }
       if (logStoreOk)  { logStore.eraseLogs(); result = CMD_OK; }
       else             { result = CMD_ERR_REFUSED; }
+      break;
+
+    case CMD_LOG_PRE_ERASE:
+      if (isArmed) { result = CMD_ERR_REFUSED; break; }
+      if (logStoreOk) {
+        uint32_t maxSec = (uint32_t)params[0] | ((uint32_t)params[1] << 8)
+                        | ((uint32_t)params[2] << 16) | ((uint32_t)params[3] << 24);
+        logStore.preEraseLogs(maxSec);
+        result = CMD_OK;
+      } else { result = CMD_ERR_REFUSED; }
       break;
 
     default:
