@@ -929,14 +929,152 @@ function initCharts() {
     document.getElementById('btn-ble').style.color = on ? '#faa' : '#8af';
   }
 
+  // Native BLE picker — shows a floating list of scan results; resolves on user tap or auto-pick.
+  // statusElemId is the span to update while scanning (e.g. 'val-ble').
+  function _bleShowPicker(conn, svcUUID, statusElemId) {
+    return new Promise(function(resolve, reject) {
+      var devices = new Map(); // addr → {name, rssi}
+      var pickerEl = null;
+      var autoTimer = null;
+      var stopScan = null;
+
+      function destroy() {
+        if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; }
+        if (stopScan) { stopScan(); stopScan = null; }
+        if (pickerEl && pickerEl.parentNode) pickerEl.parentNode.removeChild(pickerEl);
+        pickerEl = null;
+      }
+
+      function pick(addr) {
+        var d = devices.get(addr);
+        destroy();
+        resolve({ address: addr, name: d.name, rssi: d.rssi });
+      }
+
+      function render() {
+        if (!pickerEl) {
+          pickerEl = document.createElement('div');
+          pickerEl.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);' +
+            'background:#222;border:1px solid #555;border-radius:6px;padding:12px;z-index:9999;' +
+            'min-width:200px;max-width:320px;box-shadow:0 4px 20px rgba(0,0,0,.6);color:#eee;font-family:monospace';
+          pickerEl.innerHTML = '<div style="font-size:13px;margin-bottom:8px;color:#aaa">Select device</div>' +
+            '<div id="_ble_picker_list"></div>';
+          document.body.appendChild(pickerEl);
+        }
+        var list = pickerEl.querySelector('#_ble_picker_list');
+        list.innerHTML = '';
+        devices.forEach(function(d, addr) {
+          var row = document.createElement('div');
+          row.style.cssText = 'padding:8px;margin:2px 0;border-radius:4px;cursor:pointer;background:#333;' +
+            'display:flex;justify-content:space-between;align-items:center';
+          row.innerHTML = '<span>' + d.name.replace(/[<>&"]/g, '') + '</span>' +
+            '<span style="color:#888;font-size:11px">' + (d.rssi != null ? d.rssi + ' dBm' : '') + '</span>';
+          row.addEventListener('click', function() { pick(addr); });
+          list.appendChild(row);
+        });
+      }
+
+      stopScan = conn.scan(svcUUID, function(addr, name, rssi) {
+        devices.set(addr, { name: name || addr, rssi: rssi });
+        render();
+        // Auto-pick after 1.5s if only one device seen
+        if (autoTimer) clearTimeout(autoTimer);
+        autoTimer = setTimeout(function() {
+          if (devices.size === 1) pick(devices.keys().next().value);
+        }, 1500);
+      });
+
+      conn._onError = function(msg) { destroy(); reject(new Error(msg)); };
+    });
+  }
+
+  // Shared subscription setup after base BLE chars are acquired (native + web paths)
+  async function _bleSetupSubscriptions(svc) {
+      await bleTelemChar_.startNotifications();
+      bleTelemChar_.addEventListener('characteristicvaluechanged', function(ev) {
+        var buf = ev.target.value.buffer;
+        if (buf.byteLength < 13) return;
+        var dv = new DataView(buf);
+        var pktBuf = buf.slice(12);
+        var snr = dv.getFloat32(0, true);
+        var rssi = dv.getFloat32(4, true);
+        var recNum = dv.getInt32(8, true);
+        var firstByte = new Uint8Array(pktBuf)[0];
+        if (firstByte === 0xCA) { onLogChunk(pktBuf, snr, rssi, recNum); }
+        else { onLivePkt(pktBuf, snr, rssi, recNum); }
+      });
+      try {
+        bleOtaChar_ = await svc.getCharacteristic(BLE_OTA_CHAR_UUID);
+        await bleOtaChar_.startNotifications();
+        bleOtaChar_.addEventListener('characteristicvaluechanged', onOtaNotify);
+      } catch(e) { bleOtaChar_ = null; }
+      await bleLogFetchChar_.startNotifications();
+      bleLogFetchChar_.addEventListener('characteristicvaluechanged', function(ev) {
+       try {
+        var dv = ev.target.value;
+        bleFetchLastNotifyMs = Date.now();
+        var r = parseFetchPdu(dv);
+        if (r.end) { if (FETCH_VERBOSE) console.log('[ble fetch] end marker'); bleFetchDone = true; return; }
+        fetchSpeedBytes += r.bytes;
+        fetchSpeedRecs += r.parsed;
+        if (r.lowestRn >= 0 && (bleFetchLowestRn < 0 || r.lowestRn < bleFetchLowestRn)) bleFetchLowestRn = r.lowestRn;
+        if (r.parsed === 0) console.log('[ble fetch] WARN no records parsed from ' + r.bytes + 'B (dupes=' + r.dupes + ')');
+       } catch(e) {
+         console.error('[ble fetch] handler exception: '+(e&&e.message?e.message:e)+(e&&e.stack?'\n'+e.stack:''));
+       }
+      });
+  }
+
   async function connectBLE() {
     if (bleConnected) {
-      // Disconnect
-      if (bleDevice && bleDevice.gatt && bleDevice.gatt.connected) {
+      if (NativeBLE.isNative) {
+        NativeBLE.getConnection('base').disconnect();
+      } else if (bleDevice && bleDevice.gatt && bleDevice.gatt.connected) {
         bleDevice.gatt.disconnect();
       }
       return;
     }
+
+    // ── Android native path ───────────────────────────────────────────────────
+    if (NativeBLE.isNative) {
+      try {
+        var conn = NativeBLE.getConnection('base');
+        conn._onDisconnected = function() {
+          bleConnected = false;
+          setBle(false);
+          bleTelemChar_ = null; bleCmdChar_ = null; bleStatusChar_ = null; bleLogFetchChar_ = null;
+          stopStatusPolling();
+          console.log('Base BLE disconnected (native)');
+        };
+        conn._onError = function(msg) {
+          setBle(false);
+          document.getElementById('val-ble').textContent = msg || 'error';
+        };
+
+        document.getElementById('val-ble').textContent = 'scanning...';
+        var found = await _bleShowPicker(conn, BLE_SERVICE_UUID, 'val-ble');
+        document.getElementById('val-ble').textContent = 'connecting...';
+
+        var svc = await conn.connect(found.address, BLE_SERVICE_UUID);
+        bleTelemChar_    = await svc.getCharacteristic(BLE_TELEM_CHAR_UUID);
+        bleCmdChar_      = await svc.getCharacteristic(BLE_CMD_CHAR_UUID);
+        bleStatusChar_   = await svc.getCharacteristic(BLE_STATUS_CHAR_UUID);
+        bleLogFetchChar_ = await svc.getCharacteristic(BLE_LOGFETCH_CHAR_UUID);
+        await _bleSetupSubscriptions(svc);
+
+        bleConnected = true;
+        setBle(true);
+        bleReadStatus();
+        startStatusPolling();
+        console.log('Base BLE connected (native, scan RSSI: ' + found.rssi + ')');
+      } catch (err) {
+        console.error('Base BLE native connect failed:', err);
+        setBle(false);
+        document.getElementById('val-ble').textContent = (err && err.message) || 'failed';
+      }
+      return;
+    }
+    // ── End native path ───────────────────────────────────────────────────────
 
     if (!navigator.bluetooth) {
       alert('Web Bluetooth is not available. Use Chrome/Edge on HTTPS or localhost.');
@@ -972,47 +1110,7 @@ function initCharts() {
       bleStatusChar_ = await svc.getCharacteristic(BLE_STATUS_CHAR_UUID);
       bleLogFetchChar_ = await svc.getCharacteristic(BLE_LOGFETCH_CHAR_UUID);
 
-      // Subscribe to telemetry notifications
-      await bleTelemChar_.startNotifications();
-      bleTelemChar_.addEventListener('characteristicvaluechanged', function(ev) {
-        var buf = ev.target.value.buffer;
-        if (buf.byteLength < 13) return;
-        var dv = new DataView(buf);
-        var pktBuf = buf.slice(12);
-        var snr = dv.getFloat32(0, true);
-        var rssi = dv.getFloat32(4, true);
-        var recNum = dv.getInt32(8, true);
-        var firstByte = new Uint8Array(pktBuf)[0];
-        if (firstByte === 0xCA) {
-          onLogChunk(pktBuf, snr, rssi, recNum);
-        } else {
-          onLivePkt(pktBuf, snr, rssi, recNum);
-        }
-      });
-
-      // OTA characteristic (optional — may not exist on older firmware)
-      try {
-        bleOtaChar_ = await svc.getCharacteristic(BLE_OTA_CHAR_UUID);
-        await bleOtaChar_.startNotifications();
-        bleOtaChar_.addEventListener('characteristicvaluechanged', onOtaNotify);
-      } catch(e) { bleOtaChar_ = null; }
-
-      // Subscribe to log fetch notifications
-      await bleLogFetchChar_.startNotifications();
-      bleLogFetchChar_.addEventListener('characteristicvaluechanged', function(ev) {
-       try {
-        var dv = ev.target.value;
-        bleFetchLastNotifyMs = Date.now();
-        var r = parseFetchPdu(dv);
-        if (r.end) { if (FETCH_VERBOSE) console.log('[ble fetch] end marker'); bleFetchDone = true; return; }
-        fetchSpeedBytes += r.bytes;
-        fetchSpeedRecs += r.parsed;
-        if (r.lowestRn >= 0 && (bleFetchLowestRn < 0 || r.lowestRn < bleFetchLowestRn)) bleFetchLowestRn = r.lowestRn;
-        if (r.parsed === 0) console.log('[ble fetch] WARN no records parsed from ' + r.bytes + 'B (dupes=' + r.dupes + ')');
-       } catch(e) {
-         console.error('[ble fetch] handler exception: '+(e&&e.message?e.message:e)+(e&&e.stack?'\n'+e.stack:''));
-       }
-      });
+      await _bleSetupSubscriptions(svc);
 
       bleConnected = true;
       setBle(true);
@@ -1292,13 +1390,115 @@ function initCharts() {
     }
   }
 
+  // Shared subscription setup after rocket BLE chars are acquired (native + web paths)
+  async function _rktSetupSubscriptions(svc) {
+      await rktTelemChar_.startNotifications();
+      rktTelemChar_.addEventListener('characteristicvaluechanged', function(ev) {
+        onRktTelemNotify(ev.target.value.buffer);
+      });
+      try {
+        rktOtaChar_ = await svc.getCharacteristic(RKT_OTA_CHAR_UUID);
+        await rktOtaChar_.startNotifications();
+        rktOtaChar_.addEventListener('characteristicvaluechanged', onOtaNotify);
+      } catch(e) { rktOtaChar_ = null; }
+      // Proxy info characteristic (optional — only present when connected via BLE proxy).
+      // Fully isolated: any GATT error here must never propagate to the outer catch.
+      (async function() {
+        try {
+          rktProxyInfoChar_ = await svc.getCharacteristic(RKT_PROXY_INFO_CHAR_UUID);
+        } catch(e) { return; }
+        try { await rktProxyInfoChar_.startNotifications(); } catch(e) {}
+        try {
+          rktProxyInfoChar_.addEventListener('characteristicvaluechanged', function(ev) {
+            var text = new TextDecoder().decode(ev.target.value.buffer);
+            document.getElementById('val-rkt-proxy-info').textContent = text;
+          });
+        } catch(e) {}
+        try {
+          var v = await rktProxyInfoChar_.readValue();
+          document.getElementById('val-rkt-proxy-info').textContent = new TextDecoder().decode(v.buffer);
+        } catch(e) {}
+        rktProxyInfoPollInterval = setInterval(function() {
+          if (!rktProxyInfoChar_) return;
+          rktProxyInfoChar_.readValue().then(function(v) {
+            document.getElementById('val-rkt-proxy-info').textContent = new TextDecoder().decode(v.buffer);
+          }).catch(function() {});
+        }, 5000);
+      })();
+      await rktFetchChar_.startNotifications();
+      rktFetchChar_.addEventListener('characteristicvaluechanged', function(ev) {
+       try {
+        var dv = ev.target.value;
+        rktFetchLastNotifyMs = Date.now();
+        var r = parseFetchPdu(dv);
+        if (r.end) { if (FETCH_VERBOSE) console.log('[rkt fetch] end marker'); rktFetchDone = true; return; }
+        fetchSpeedBytes += r.bytes;
+        fetchSpeedRecs += r.parsed;
+        if (r.lowestRn >= 0 && (rktFetchLowestRn < 0 || r.lowestRn < rktFetchLowestRn)) rktFetchLowestRn = r.lowestRn;
+        if (r.parsed === 0) console.log('[rkt fetch] WARN no records parsed from ' + r.bytes + 'B (dupes=' + r.dupes + ')');
+       } catch(e) {
+         console.error('[rkt fetch] handler exception: '+(e&&e.message?e.message:e)+(e&&e.stack?'\n'+e.stack:''));
+       }
+      });
+  }
+
   async function connectRocketBLE() {
     if (rktBleConnected) {
-      if (rktDevice && rktDevice.gatt && rktDevice.gatt.connected) {
+      if (NativeBLE.isNative) {
+        NativeBLE.getConnection('rocket').disconnect();
+      } else if (rktDevice && rktDevice.gatt && rktDevice.gatt.connected) {
         rktDevice.gatt.disconnect();
       }
       return;
     }
+
+    // ── Android native path ───────────────────────────────────────────────────
+    if (NativeBLE.isNative) {
+      try {
+        var conn = NativeBLE.getConnection('rocket');
+        conn._onDisconnected = function() {
+          rktBleConnected = false;
+          setRocketBle(false);
+          rktTelemChar_ = null; rktCmdChar_ = null;
+          rktStatusChar_ = null; rktConnSetChar_ = null; rktFetchChar_ = null;
+          rktOtaChar_ = null; rktProxyInfoChar_ = null;
+          if (rktProxyInfoPollInterval) { clearInterval(rktProxyInfoPollInterval); rktProxyInfoPollInterval = null; }
+          document.getElementById('val-rkt-proxy-info').textContent = '';
+          stopStatusPolling();
+          console.log('Rocket BLE disconnected (native)');
+        };
+        conn._onError = function(msg) {
+          setRocketBle(false);
+          document.getElementById('val-rktble').textContent = msg || 'error';
+        };
+
+        document.getElementById('val-rktble').textContent = 'scanning...';
+        var found = await _bleShowPicker(conn, RKT_SERVICE_UUID, 'val-rktble');
+        document.getElementById('val-rktble').textContent = 'connecting...';
+
+        var svc = await conn.connect(found.address, RKT_SERVICE_UUID);
+        rktTelemChar_   = await svc.getCharacteristic(RKT_TELEM_CHAR_UUID);
+        rktCmdChar_     = await svc.getCharacteristic(RKT_CMD_CHAR_UUID);
+        rktStatusChar_  = await svc.getCharacteristic(RKT_STATUS_CHAR_UUID);
+        rktConnSetChar_ = await svc.getCharacteristic(RKT_CONNSET_CHAR_UUID);
+        rktFetchChar_   = await svc.getCharacteristic(RKT_LOGFETCH_CHAR_UUID);
+        await _rktSetupSubscriptions(svc);
+
+        rktBleConnected = true;
+        setRocketBle(true);
+        liveSource = 'rkt';
+        showView(-1);
+        rktReadStatus();
+        startStatusPolling();
+        console.log('Rocket BLE connected (native, scan RSSI: ' + found.rssi + ')');
+      } catch (err) {
+        console.error('Rocket BLE native connect failed:', err);
+        setRocketBle(false);
+        document.getElementById('val-rktble').textContent = (err && err.message) || 'failed';
+      }
+      return;
+    }
+    // ── End native path ───────────────────────────────────────────────────────
 
     if (!navigator.bluetooth) {
       alert('Web Bluetooth not available. Use Chrome/Edge on HTTPS or localhost.');
@@ -1338,60 +1538,7 @@ function initCharts() {
       rktConnSetChar_ = await svc.getCharacteristic(RKT_CONNSET_CHAR_UUID);
       rktFetchChar_   = await svc.getCharacteristic(RKT_LOGFETCH_CHAR_UUID);
 
-      // Subscribe to telemetry notifications
-      await rktTelemChar_.startNotifications();
-      rktTelemChar_.addEventListener('characteristicvaluechanged', function(ev) {
-        onRktTelemNotify(ev.target.value.buffer);
-      });
-
-      // OTA characteristic (optional — may not exist on older firmware)
-      try {
-        rktOtaChar_ = await svc.getCharacteristic(RKT_OTA_CHAR_UUID);
-        await rktOtaChar_.startNotifications();
-        rktOtaChar_.addEventListener('characteristicvaluechanged', onOtaNotify);
-      } catch(e) { rktOtaChar_ = null; }
-
-      // Proxy info characteristic (optional — only present when connected via BLE proxy).
-      // Fully isolated: any GATT error here must never propagate to the outer catch.
-      (async function() {
-        try {
-          rktProxyInfoChar_ = await svc.getCharacteristic(RKT_PROXY_INFO_CHAR_UUID);
-        } catch(e) { return; }
-        try { await rktProxyInfoChar_.startNotifications(); } catch(e) {}
-        try {
-          rktProxyInfoChar_.addEventListener('characteristicvaluechanged', function(ev) {
-            var text = new TextDecoder().decode(ev.target.value.buffer);
-            document.getElementById('val-rkt-proxy-info').textContent = text;
-          });
-        } catch(e) {}
-        try {
-          var v = await rktProxyInfoChar_.readValue();
-          document.getElementById('val-rkt-proxy-info').textContent = new TextDecoder().decode(v.buffer);
-        } catch(e) {}
-        rktProxyInfoPollInterval = setInterval(function() {
-          if (!rktProxyInfoChar_) return;
-          rktProxyInfoChar_.readValue().then(function(v) {
-            document.getElementById('val-rkt-proxy-info').textContent = new TextDecoder().decode(v.buffer);
-          }).catch(function() {});
-        }, 5000);
-      })();
-
-      // Subscribe to log fetch notifications
-      await rktFetchChar_.startNotifications();
-      rktFetchChar_.addEventListener('characteristicvaluechanged', function(ev) {
-       try {
-        var dv = ev.target.value;
-        rktFetchLastNotifyMs = Date.now();
-        var r = parseFetchPdu(dv);
-        if (r.end) { if (FETCH_VERBOSE) console.log('[rkt fetch] end marker'); rktFetchDone = true; return; }
-        fetchSpeedBytes += r.bytes;
-        fetchSpeedRecs += r.parsed;
-        if (r.lowestRn >= 0 && (rktFetchLowestRn < 0 || r.lowestRn < rktFetchLowestRn)) rktFetchLowestRn = r.lowestRn;
-        if (r.parsed === 0) console.log('[rkt fetch] WARN no records parsed from ' + r.bytes + 'B (dupes=' + r.dupes + ')');
-       } catch(e) {
-         console.error('[rkt fetch] handler exception: '+(e&&e.message?e.message:e)+(e&&e.stack?'\n'+e.stack:''));
-       }
-      });
+      await _rktSetupSubscriptions(svc);
 
       rktBleConnected = true;
       setRocketBle(true);

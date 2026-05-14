@@ -8,7 +8,15 @@
       "Bash(~/.platformio/penv/bin/pio run:*)",
       "Bash(/c/Users/Kaldosh/.platformio/penv/Scripts/pio.exe run:*)",
       "Bash(grep -E \"\\\\.\\(h|cpp|ino\\)$\")",
-      "Read(%APPDATA%/Arduino15/packages/esp32/tools/tools/esp32s3-libs/**)"
+      "Read(%APPDATA%/Arduino15/packages/esp32/tools/tools/esp32s3-libs/**)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\Kaldosh\\\\AndroidStudioProjects\\\\WebBridge\" -Recurse -Filter \"*.kt\")",
+      "Bash(Select-Object FullName)",
+      "Read(//c/Users/Kaldosh/AndroidStudioProjects/WebBridge/**)",
+      "Read(//c/Users/Kaldosh/AndroidStudioProjects/**)",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\Kaldosh\\\\AndroidStudioProjects\\\\WebBridge\" -Recurse -File | Select-Object FullName | ForEach-Object { $_.FullName })"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\Kaldosh\\AndroidStudioProjects\\WebBridge\\app\\src\\main\\java\\com\\example\\webbridge"
     ]
   }
 }
