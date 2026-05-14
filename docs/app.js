@@ -947,7 +947,7 @@ function initCharts() {
       bleDevice = await navigator.bluetooth.requestDevice({
         filters: [
           { services: [BLE_SERVICE_UUID] },
-          { namePrefix: 'Wifi' }
+          { namePrefix: 'MoonBase' }
         ],
         optionalServices: [BLE_SERVICE_UUID]
       });
@@ -1309,7 +1309,7 @@ function initCharts() {
       rktDevice = await navigator.bluetooth.requestDevice({
         filters: [
           { services: [RKT_SERVICE_UUID] },
-          { namePrefix: 'Moonshot-Rocket' }
+          { namePrefix: 'Moonshot' }
         ],
         optionalServices: [RKT_SERVICE_UUID]
       });
