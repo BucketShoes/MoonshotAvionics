@@ -67,14 +67,23 @@ const NativeBLE = (() => {
   window.onBLEDisconnected = (connId) => {
     const conn = _connections.get(connId);
     if (!conn) return;
+    // Clear stale GATT state so the same conn object can be reused for a reconnect
+    conn._fakeChars.clear();
+    conn._resolveConnect = null;
+    conn._rejectConnect  = null;
+    conn._resolveRssi    = null;
     conn._onDisconnected?.();
   };
 
   window.onBLEError = (connId, msg) => {
     const conn = _connections.get(connId);
     if (!conn) return;
-    conn._rejectConnect?.(new Error(msg));
-    conn._onError?.(msg);
+    const reject = conn._rejectConnect;
+    conn._resolveConnect = null;
+    conn._rejectConnect  = null;
+    conn._fakeChars.clear();
+    if (reject) reject(new Error(msg));
+    else conn._onError?.(msg);
   };
 
   // One packet per char — route to correct FakeChar and fire synthetic event

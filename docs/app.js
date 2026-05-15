@@ -929,20 +929,20 @@ function initCharts() {
     document.getElementById('btn-ble').style.color = on ? '#faa' : '#8af';
   }
 
-  // Native BLE picker — shows a floating list of scan results; resolves on user tap or auto-pick.
-  // statusElemId is the span to update while scanning (e.g. 'val-ble').
-  function _bleShowPicker(conn, svcUUID, statusElemId) {
+  // Native BLE picker — shows immediately on scan start with a cancel button and title.
+  // Resolves when user taps a device, rejects when user cancels.
+  // title: label shown in the picker header (e.g. 'Base Station' or 'Rocket')
+  function _bleShowPicker(conn, svcUUID, title) {
     return new Promise(function(resolve, reject) {
       var devices = new Map(); // addr → {name, rssi}
       var pickerEl = null;
-      var autoTimer = null;
       var stopScan = null;
 
       function destroy() {
-        if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; }
         if (stopScan) { stopScan(); stopScan = null; }
         if (pickerEl && pickerEl.parentNode) pickerEl.parentNode.removeChild(pickerEl);
         pickerEl = null;
+        conn._onError = null;
       }
 
       function pick(addr) {
@@ -951,41 +951,71 @@ function initCharts() {
         resolve({ address: addr, name: d.name, rssi: d.rssi });
       }
 
+      function cancel() {
+        destroy();
+        reject(new Error('cancelled'));
+      }
+
       function render() {
-        if (!pickerEl) {
-          pickerEl = document.createElement('div');
-          pickerEl.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);' +
-            'background:#222;border:1px solid #555;border-radius:6px;padding:12px;z-index:9999;' +
-            'min-width:200px;max-width:320px;box-shadow:0 4px 20px rgba(0,0,0,.6);color:#eee;font-family:monospace';
-          pickerEl.innerHTML = '<div style="font-size:13px;margin-bottom:8px;color:#aaa">Select device</div>' +
-            '<div id="_ble_picker_list"></div>';
-          document.body.appendChild(pickerEl);
-        }
         var list = pickerEl.querySelector('#_ble_picker_list');
         list.innerHTML = '';
+        if (devices.size === 0) {
+          list.innerHTML = '<div style="color:#666;font-size:12px;padding:8px 0">Scanning...</div>';
+          return;
+        }
         devices.forEach(function(d, addr) {
           var row = document.createElement('div');
           row.style.cssText = 'padding:8px;margin:2px 0;border-radius:4px;cursor:pointer;background:#333;' +
             'display:flex;justify-content:space-between;align-items:center';
-          row.innerHTML = '<span>' + d.name.replace(/[<>&"]/g, '') + '</span>' +
-            '<span style="color:#888;font-size:11px">' + (d.rssi != null ? d.rssi + ' dBm' : '') + '</span>';
+          row.innerHTML = '<span>' + (d.name || addr).replace(/[<>&"]/g, '') + '</span>' +
+            '<span style="color:#888;font-size:11px">' + (d.rssi != null ? d.rssi + ' dBm' : '') + '</span>';
           row.addEventListener('click', function() { pick(addr); });
           list.appendChild(row);
         });
       }
 
+      // Create and show the picker immediately
+      pickerEl = document.createElement('div');
+      pickerEl.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);' +
+        'background:#222;border:1px solid #555;border-radius:6px;padding:12px;z-index:9999;' +
+        'min-width:220px;max-width:340px;box-shadow:0 4px 20px rgba(0,0,0,.6);color:#eee;font-family:monospace';
+      pickerEl.innerHTML =
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
+          '<span style="font-size:13px;color:#aaa">Connect: ' + title.replace(/[<>&"]/g, '') + '</span>' +
+          '<button id="_ble_picker_cancel" style="background:#444;color:#ccc;border:1px solid #666;' +
+            'border-radius:3px;padding:2px 8px;cursor:pointer;font-size:11px">Cancel</button>' +
+        '</div>' +
+        '<div id="_ble_picker_list"></div>';
+      document.body.appendChild(pickerEl);
+      render(); // shows "Scanning..." immediately
+      pickerEl.querySelector('#_ble_picker_cancel').addEventListener('click', cancel);
+
       stopScan = conn.scan(svcUUID, function(addr, name, rssi) {
         devices.set(addr, { name: name || addr, rssi: rssi });
         render();
-        // Auto-pick after 1.5s if only one device seen
-        if (autoTimer) clearTimeout(autoTimer);
-        autoTimer = setTimeout(function() {
-          if (devices.size === 1) pick(devices.keys().next().value);
-        }, 1500);
       });
 
       conn._onError = function(msg) { destroy(); reject(new Error(msg)); };
     });
+  }
+
+  // Reset native BLE connection state to disconnected (called on disconnect or page reload)
+  function _bleNativeReset(which) {
+    if (which === 'base') {
+      bleConnected = false;
+      setBle(false);
+      bleTelemChar_ = null; bleCmdChar_ = null; bleStatusChar_ = null; bleLogFetchChar_ = null;
+      bleOtaChar_ = null;
+      stopStatusPolling();
+    } else {
+      rktBleConnected = false;
+      setRocketBle(false);
+      rktTelemChar_ = null; rktCmdChar_ = null; rktStatusChar_ = null;
+      rktConnSetChar_ = null; rktFetchChar_ = null; rktOtaChar_ = null; rktProxyInfoChar_ = null;
+      if (rktProxyInfoPollInterval) { clearInterval(rktProxyInfoPollInterval); rktProxyInfoPollInterval = null; }
+      document.getElementById('val-rkt-proxy-info').textContent = '';
+      stopStatusPolling();
+    }
   }
 
   // Shared subscription setup after base BLE chars are acquired (native + web paths)
@@ -1027,8 +1057,10 @@ function initCharts() {
 
   async function connectBLE() {
     if (bleConnected) {
+      // Disconnect — reset state immediately so UI reflects it
       if (NativeBLE.isNative) {
         NativeBLE.getConnection('base').disconnect();
+        _bleNativeReset('base');
       } else if (bleDevice && bleDevice.gatt && bleDevice.gatt.connected) {
         bleDevice.gatt.disconnect();
       }
@@ -1040,20 +1072,23 @@ function initCharts() {
       try {
         var conn = NativeBLE.getConnection('base');
         conn._onDisconnected = function() {
-          bleConnected = false;
-          setBle(false);
-          bleTelemChar_ = null; bleCmdChar_ = null; bleStatusChar_ = null; bleLogFetchChar_ = null;
-          stopStatusPolling();
           console.log('Base BLE disconnected (native)');
-        };
-        conn._onError = function(msg) {
-          setBle(false);
-          document.getElementById('val-ble').textContent = msg || 'error';
+          _bleNativeReset('base');
         };
 
         document.getElementById('val-ble').textContent = 'scanning...';
-        var found = await _bleShowPicker(conn, BLE_SERVICE_UUID, 'val-ble');
+        var found = await _bleShowPicker(conn, BLE_SERVICE_UUID, 'Base Station');
         document.getElementById('val-ble').textContent = 'connecting...';
+
+        // Re-wire onDisconnected now that we're past the picker (conn._onError was reset by picker)
+        conn._onDisconnected = function() {
+          console.log('Base BLE disconnected (native)');
+          _bleNativeReset('base');
+        };
+        conn._onError = function(msg) {
+          console.error('Base BLE error (native):', msg);
+          _bleNativeReset('base');
+        };
 
         var svc = await conn.connect(found.address, BLE_SERVICE_UUID);
         bleTelemChar_    = await svc.getCharacteristic(BLE_TELEM_CHAR_UUID);
@@ -1068,9 +1103,13 @@ function initCharts() {
         startStatusPolling();
         console.log('Base BLE connected (native, scan RSSI: ' + found.rssi + ')');
       } catch (err) {
-        console.error('Base BLE native connect failed:', err);
-        setBle(false);
-        document.getElementById('val-ble').textContent = (err && err.message) || 'failed';
+        if (err && err.message === 'cancelled') {
+          // User cancelled picker — just reset status text, leave button as Connect
+          document.getElementById('val-ble').textContent = 'off';
+        } else {
+          console.error('Base BLE native connect failed:', err);
+          _bleNativeReset('base');
+        }
       }
       return;
     }
@@ -1444,8 +1483,10 @@ function initCharts() {
 
   async function connectRocketBLE() {
     if (rktBleConnected) {
+      // Disconnect — reset state immediately so UI reflects it
       if (NativeBLE.isNative) {
         NativeBLE.getConnection('rocket').disconnect();
+        _bleNativeReset('rocket');
       } else if (rktDevice && rktDevice.gatt && rktDevice.gatt.connected) {
         rktDevice.gatt.disconnect();
       }
@@ -1457,24 +1498,23 @@ function initCharts() {
       try {
         var conn = NativeBLE.getConnection('rocket');
         conn._onDisconnected = function() {
-          rktBleConnected = false;
-          setRocketBle(false);
-          rktTelemChar_ = null; rktCmdChar_ = null;
-          rktStatusChar_ = null; rktConnSetChar_ = null; rktFetchChar_ = null;
-          rktOtaChar_ = null; rktProxyInfoChar_ = null;
-          if (rktProxyInfoPollInterval) { clearInterval(rktProxyInfoPollInterval); rktProxyInfoPollInterval = null; }
-          document.getElementById('val-rkt-proxy-info').textContent = '';
-          stopStatusPolling();
           console.log('Rocket BLE disconnected (native)');
-        };
-        conn._onError = function(msg) {
-          setRocketBle(false);
-          document.getElementById('val-rktble').textContent = msg || 'error';
+          _bleNativeReset('rocket');
         };
 
         document.getElementById('val-rktble').textContent = 'scanning...';
-        var found = await _bleShowPicker(conn, RKT_SERVICE_UUID, 'val-rktble');
+        var found = await _bleShowPicker(conn, RKT_SERVICE_UUID, 'Rocket');
         document.getElementById('val-rktble').textContent = 'connecting...';
+
+        // Re-wire after picker (picker may have clobbered conn._onError)
+        conn._onDisconnected = function() {
+          console.log('Rocket BLE disconnected (native)');
+          _bleNativeReset('rocket');
+        };
+        conn._onError = function(msg) {
+          console.error('Rocket BLE error (native):', msg);
+          _bleNativeReset('rocket');
+        };
 
         var svc = await conn.connect(found.address, RKT_SERVICE_UUID);
         rktTelemChar_   = await svc.getCharacteristic(RKT_TELEM_CHAR_UUID);
@@ -1492,9 +1532,12 @@ function initCharts() {
         startStatusPolling();
         console.log('Rocket BLE connected (native, scan RSSI: ' + found.rssi + ')');
       } catch (err) {
-        console.error('Rocket BLE native connect failed:', err);
-        setRocketBle(false);
-        document.getElementById('val-rktble').textContent = (err && err.message) || 'failed';
+        if (err && err.message === 'cancelled') {
+          document.getElementById('val-rktble').textContent = 'off';
+        } else {
+          console.error('Rocket BLE native connect failed:', err);
+          _bleNativeReset('rocket');
+        }
       }
       return;
     }
