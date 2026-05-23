@@ -1008,7 +1008,7 @@ void deinitBLE() {
 static void powerTestInit() {
   Serial.begin(115200);
   delay(500);
-  
+
 
 #if defined(POWER_TEST_DEEP)
   Serial.println("=== POWER TEST: deep sleep ===");
@@ -1021,7 +1021,7 @@ static void powerTestInit() {
   ledcAttach(LED_PIN, 1000, 11);
   ledcWrite(LED_PIN, 0);
   pinMode(VEXT_CTRL_PIN, OUTPUT);     digitalWrite(VEXT_CTRL_PIN, LOW);
-  pinMode(VBAT_ADC_CTRL_PIN, OUTPUT); digitalWrite(VBAT_ADC_CTRL_PIN, LOW);
+  pinMode(VBAT_ADC_CTRL_PIN, OUTPUT); digitalWrite(VBAT_ADC_CTRL_PIN, HIGH); //TODO: this should be a pullup, theres no series resistor (and check adc voltage x4.9 is about right for lipo to check vbat still working)
 
   // SX1262 is already in standby after reset; deep sleep mode costs ~0.6µA
   // and prevents it responding to SPI glitches. Send SetSleep explicitly.
