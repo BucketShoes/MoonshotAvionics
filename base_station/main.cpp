@@ -988,18 +988,18 @@ void deinitBLE() {
 
 // -- Uncomment one: --
 // #define POWER_TEST_DEEP
-// #define POWER_TEST_LIGHT
-// #define POWER_TEST_CPU
+//#define POWER_TEST_LIGHT
+#define POWER_TEST_CPU//20ma
 
 // -- Optionally add (not meaningful for DEEP): --
-// #define POWER_TEST_KEEP_LORA
-// #define POWER_TEST_KEEP_BLE
-// #define POWER_TEST_KEEP_WIFI
-
+#define POWER_TEST_KEEP_LORA
+//#define POWER_TEST_KEEP_BLE
+//#define POWER_TEST_KEEP_WIFI//80ma
+  
 // -- CPU frequency for LIGHT and CPU modes: --
-// #define POWER_TEST_CPU_240
+ //#define POWER_TEST_CPU_240
 // #define POWER_TEST_CPU_160
-// #define POWER_TEST_CPU_80   // default
+#define POWER_TEST_CPU_80   // default
 // #define POWER_TEST_CPU_40
 
 #if defined(POWER_TEST_DEEP) || defined(POWER_TEST_LIGHT) || defined(POWER_TEST_CPU)
@@ -1008,6 +1008,7 @@ void deinitBLE() {
 static void powerTestInit() {
   Serial.begin(115200);
   delay(500);
+  
 
 #if defined(POWER_TEST_DEEP)
   Serial.println("=== POWER TEST: deep sleep ===");
@@ -1030,13 +1031,13 @@ static void powerTestInit() {
   bsRadioInit();
   Serial.println("SX1262: RX");
 #else
-  pinMode(LORA_NSS_PIN, OUTPUT); digitalWrite(LORA_NSS_PIN, HIGH);
-  bsLoraSPI.begin(LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN, LORA_NSS_PIN);
-  bsLoraSPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
-  digitalWrite(LORA_NSS_PIN, LOW);
-  bsLoraSPI.transfer(0x84); bsLoraSPI.transfer(0x00); // SetSleep, cold start
-  digitalWrite(LORA_NSS_PIN, HIGH);
-  bsLoraSPI.endTransaction();
+  // pinMode(LORA_NSS_PIN, OUTPUT); digitalWrite(LORA_NSS_PIN, HIGH);
+  // bsLoraSPI.begin(LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN, LORA_NSS_PIN);
+  // bsLoraSPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
+  // digitalWrite(LORA_NSS_PIN, LOW);
+  // bsLoraSPI.transfer(0x84); bsLoraSPI.transfer(0x00); // SetSleep, cold start
+  // digitalWrite(LORA_NSS_PIN, HIGH);
+  // bsLoraSPI.endTransaction();
   Serial.println("SX1262: sleep");
 #endif
 
@@ -1072,6 +1073,7 @@ static void powerTestInit() {
   Serial.flush();
   delay(200);
 }
+#endif // defined(POWER_TEST_DEEP) || defined(POWER_TEST_LIGHT) || defined(POWER_TEST_CPU)
 
 void setup() {
 #ifdef POWER_TEST_ACTIVE
