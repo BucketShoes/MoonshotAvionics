@@ -969,7 +969,84 @@ void deinitBLE() {
 
 // ===================== SETUP =====================
 
+// ===================== POWER TEST MODE =====================
+// Uncomment POWER_TEST to bypass normal init and sleep forever after shutting
+// everything down. Use POWER_TEST_KEEP_* flags to leave one subsystem running
+// and measure its contribution in isolation.
+//
+// #define POWER_TEST
+// #define POWER_TEST_KEEP_LORA   // leave SX1262 in RX
+// #define POWER_TEST_KEEP_BLE    // leave BLE advertising
+// #define POWER_TEST_KEEP_WIFI   // leave WiFi AP up
+
+#ifdef POWER_TEST
+static void powerTestSleep() {
+  Serial.begin(115200);
+  delay(500);
+  Serial.println("=== POWER TEST ===");
+
+  // Kill LED
+  ledcAttach(LED_PIN, 1000, 11);
+  ledcWrite(LED_PIN, 0);
+
+  // VEXT off (GPS, display backlight, anything on the external rail)
+  pinMode(VEXT_CTRL_PIN, OUTPUT); digitalWrite(VEXT_CTRL_PIN, LOW);
+  // VBAT divider off
+  pinMode(VBAT_ADC_CTRL_PIN, OUTPUT); digitalWrite(VBAT_ADC_CTRL_PIN, LOW);
+
+#ifndef POWER_TEST_KEEP_LORA
+  // Drive SX1262 into sleep via RST + NSS — if RadioLib isn't inited we just
+  // assert reset and leave NSS high so the SPI peripheral stays idle.
+  pinMode(LORA_RST_PIN,  OUTPUT); digitalWrite(LORA_RST_PIN,  LOW);
+  delay(2);
+  digitalWrite(LORA_RST_PIN, HIGH);
+  // Now init just enough to call sleep()
+  bsLoraSPI.begin(LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN, LORA_NSS_PIN);
+  SX1262 radio = new Module(LORA_NSS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, bsLoraSPI);
+  radio.begin(915.0, 125.0, 9, 5, 0x12, 2, 8); // don't care about params, just need the driver alive
+  radio.sleep();
+  Serial.println("SX1262: sleep");
+#else
+  bsLoraSPI.begin(LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN, LORA_NSS_PIN);
+  bsRadioInit();
+  Serial.println("SX1262: RX (kept)");
+#endif
+
+#ifdef POWER_TEST_KEEP_BLE
+  initBLE();
+  Serial.println("BLE: advertising (kept)");
+#else
+  // Don't init BLE at all — stack never starts
+  Serial.println("BLE: off");
+#endif
+
+#ifdef POWER_TEST_KEEP_WIFI
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(WIFI_SSID, WIFI_PASS, WIFI_CHANNEL);
+  Serial.println("WiFi: AP (kept)");
+#else
+  WiFi.mode(WIFI_OFF);
+  esp_wifi_stop();
+  Serial.println("WiFi: off");
+#endif
+
+  // Reduce CPU to 80MHz (lowest that keeps USB serial working; go to 10MHz if
+  // you're not using serial to read the measurement)
+  setCpuFrequencyMhz(80);
+
+  Serial.println("Sleeping forever — measure now.");
+  Serial.flush();
+  delay(100);
+
+  esp_deep_sleep_start(); // deep sleep with no wakeup = lowest ESP32 quiescent
+}
+#endif // POWER_TEST
+
 void setup() {
+#ifdef POWER_TEST
+  powerTestSleep(); // never returns
+#endif
+
   bootMicros = micros();  // Capture boot time for tagged serial timestamps
   //taggedSerial.begin(SERIAL_BAUD);
   Serial.begin(SERIAL_BAUD);
