@@ -18,6 +18,7 @@
 #define VBAT_ADC_PIN      1
 #define VBAT_ADC_CTRL_PIN 2
 #define VBAT_MULTIPLIER   4.9f
+#define USER_BTN_PIN      0   // GPIO0 / BOOT button on Tracker v1.1
 
 #define SERIAL_BAUD   2000000
 #include "secrets.h"  // gitignored — copy secrets_example.h to secrets.h
@@ -43,8 +44,42 @@ unsigned long bootMicros = 0;
 #define TRANSPORT_USB   0x04  // reserved for future
 #define TRANSPORT_ALL   (TRANSPORT_WIFI | TRANSPORT_BLE | TRANSPORT_USB)
 
-bool wifiEnabled = true;
+bool wifiEnabled = false;
 bool bleEnabled = true;
+
+static void enableWifi() {
+  if (wifiEnabled) return;
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(WIFI_SSID, WIFI_PASS, WIFI_CHANNEL);
+  httpServer.begin();
+  wifiEnabled = true;
+  Serial.println("WiFi: AP on");
+}
+
+static void disableWifi() {
+  if (!wifiEnabled) return;
+  WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_OFF);
+  esp_wifi_stop();
+  wifiEnabled = false;
+  Serial.println("WiFi: off");
+}
+
+// Long flash = WiFi on, 5 short = WiFi off
+static void ledSignalWifiOn() {
+  ledcWrite(LED_PIN, 512);
+  delay(800);
+  ledcWrite(LED_PIN, 0);
+}
+
+static void ledSignalWifiOff() {
+  for (int i = 0; i < 5; i++) {
+    ledcWrite(LED_PIN, 512);
+    delay(80);
+    ledcWrite(LED_PIN, 0);
+    delay(80);
+  }
+}
 
 
 
@@ -57,10 +92,12 @@ bool logStoreOk = false;
 uint16_t baseBattMv = 0;
 
 void readBaseBattery() {
-  digitalWrite(VBAT_ADC_CTRL_PIN, HIGH);
+  // VBAT_ADC_CTRL_PIN drives an NPN base with no series resistor on the PCB.
+  // Use INPUT_PULLUP (~50kΩ) to switch the transistor without burning 40mA.
+  pinMode(VBAT_ADC_CTRL_PIN, INPUT_PULLUP);
   delayMicroseconds(400);
   uint32_t adcMv = analogReadMilliVolts(VBAT_ADC_PIN);
-  digitalWrite(VBAT_ADC_CTRL_PIN, LOW);
+  pinMode(VBAT_ADC_CTRL_PIN, INPUT);  // tri-state: base floating, transistor off
   baseBattMv = (uint16_t)(adcMv * VBAT_MULTIPLIER);
 }
 
@@ -1021,7 +1058,7 @@ static void powerTestInit() {
   ledcAttach(LED_PIN, 1000, 11);
   ledcWrite(LED_PIN, 0);
   pinMode(VEXT_CTRL_PIN, OUTPUT);     digitalWrite(VEXT_CTRL_PIN, LOW);
-  pinMode(VBAT_ADC_CTRL_PIN, OUTPUT); digitalWrite(VBAT_ADC_CTRL_PIN, HIGH); //TODO: this should be a pullup, theres no series resistor (and check adc voltage x4.9 is about right for lipo to check vbat still working)
+  pinMode(VBAT_ADC_CTRL_PIN, INPUT);  // tri-state; readBaseBattery() switches to INPUT_PULLUP briefly
 
   // SX1262 is already in standby after reset; deep sleep mode costs ~0.6µA
   // and prevents it responding to SPI glitches. Send SetSleep explicitly.
@@ -1103,7 +1140,7 @@ void setup() {
   ledcWrite(LED_PIN, 50);
 
   pinMode(VEXT_CTRL_PIN, OUTPUT); digitalWrite(VEXT_CTRL_PIN, LOW); //dont need gps, etc
-  pinMode(VBAT_ADC_CTRL_PIN, OUTPUT); digitalWrite(VBAT_ADC_CTRL_PIN, LOW);
+  pinMode(VBAT_ADC_CTRL_PIN, INPUT);  // tri-state; readBaseBattery() switches to INPUT_PULLUP briefly
   analogSetAttenuation(ADC_11db);
   readBaseBattery();
 
@@ -1138,14 +1175,12 @@ void setup() {
   Serial.print(" pwr="); Serial.println(activePower);
   Serial.print("Device ID: "); Serial.println(DEVICE_ID);
 
-  // WiFi AP
-  Serial.println("WiFi: setting mode...");
-  WiFi.mode(WIFI_AP);
-  Serial.println("WiFi: starting softAP...");
-  bool apOk = WiFi.softAP(WIFI_SSID, WIFI_PASS, WIFI_CHANNEL);
-  Serial.print("WiFi: softAP result="); Serial.println(apOk);
-  Serial.print("AP: "); Serial.println(WiFi.softAPIP());
+  // WiFi off by default — button toggles it on/off at runtime
+  WiFi.mode(WIFI_OFF);
+  esp_wifi_stop();
+  Serial.println("WiFi: off (press USER_BTN to enable)");
 
+  // Register HTTP routes — server not started until WiFi is enabled
   httpServer.on("/", HTTP_GET, [](AsyncWebServerRequest *r){
     Serial.println("HTTP GET /");
     AsyncWebServerResponse *resp = r->beginResponse(LittleFS, "/index.html.gz", "text/html");
@@ -1173,7 +1208,9 @@ void setup() {
     [](AsyncWebServerRequest *req){ }, NULL, handleApiOtaChunk);
   ws.onEvent(onWsEvent);
   httpServer.addHandler(&ws);
-  httpServer.begin();
+  // httpServer.begin() called by enableWifi() when button pressed
+
+  pinMode(USER_BTN_PIN, INPUT_PULLUP);
 
   // LoRa
   bsLoraSPI.begin(LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN, LORA_NSS_PIN);
@@ -1188,16 +1225,37 @@ void setup() {
 
   Serial.println("=== Ready ===");
 
-  esp_wifi_set_max_tx_power(20); //in 0.25dbm units low power wifi
-  esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
-  setCpuFrequencyMhz(160);
+  setCpuFrequencyMhz(80);
 }
 
 // ===================== MAIN LOOP =====================
 
+// ---- USER BUTTON: toggle WiFi ----
+static void handleUserButton() {
+  static bool lastState = HIGH;
+  static unsigned long pressedAt = 0;
+  bool state = digitalRead(USER_BTN_PIN);
+  if (state == LOW && lastState == HIGH) {
+    pressedAt = millis();
+  }
+  if (state == HIGH && lastState == LOW && (millis() - pressedAt) > 30) {
+    // Rising edge after debounce — toggle WiFi
+    if (wifiEnabled) {
+      disableWifi();
+      ledSignalWifiOff();
+    } else {
+      enableWifi();
+      ledSignalWifiOn();
+    }
+  }
+  lastState = state;
+}
+
 void loop() {
   //TODO: should restructure this to have more done by main loop - currently more stuff than there should be has ended up in callbacks on the wrong task, e.g. notify pushes ws which delays it a while.
-  
+
+  handleUserButton();
+
   NimBLEExtAdvertising* pExtAdv = NimBLEDevice::getAdvertising();
   if (!pExtAdv->isActive(0)) pExtAdv->start(0);
   if (!pExtAdv->isActive(1)) pExtAdv->start(1);
