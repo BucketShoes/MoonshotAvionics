@@ -83,6 +83,7 @@ bool radioInit() {
     return false;
   }
 
+  radio.setRxBoostedGainMode(true);
   radio.setDio1Action(onDio1);
   st = radio.startReceive();
   if (st != RADIOLIB_ERR_NONE) {
