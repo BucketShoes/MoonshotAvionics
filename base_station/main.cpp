@@ -970,87 +970,124 @@ void deinitBLE() {
 // ===================== SETUP =====================
 
 // ===================== POWER TEST MODE =====================
-// Uncomment POWER_TEST to bypass normal init and sleep forever after shutting
-// everything down. Use POWER_TEST_KEEP_* flags to leave one subsystem running
-// and measure its contribution in isolation.
+// Select ONE test mode, then optionally add KEEP_* flags for that mode.
 //
- #define POWER_TEST
- #define POWER_TEST_KEEP_LORA   // leave SX1262 in RX
- #define POWER_TEST_KEEP_BLE    // leave BLE advertising
- #define POWER_TEST_KEEP_WIFI   // leave WiFi AP up
+// POWER_TEST_DEEP   — deep sleep (chip halted, lowest possible floor)
+// POWER_TEST_LIGHT  — light sleep (CPU halted, peripherals can stay alive,
+//                     BLE controller can wake on connection events)
+// POWER_TEST_CPU    — CPU spinning at chosen frequency, no subsystems
+//
+// KEEP flags (apply to all modes except deep sleep, which kills everything):
+//   POWER_TEST_KEEP_LORA   — leave SX1262 in RX
+//   POWER_TEST_KEEP_BLE    — init BLE advertising
+//   POWER_TEST_KEEP_WIFI   — start WiFi AP
+//
+// CPU frequency for POWER_TEST_CPU and POWER_TEST_LIGHT (pick one):
+//   POWER_TEST_CPU_240, POWER_TEST_CPU_160, POWER_TEST_CPU_80, POWER_TEST_CPU_40
+//   Default if none defined: 80MHz
 
-#ifdef POWER_TEST
-static void powerTestSleep() {
+// -- Uncomment one: --
+// #define POWER_TEST_DEEP
+// #define POWER_TEST_LIGHT
+// #define POWER_TEST_CPU
+
+// -- Optionally add (not meaningful for DEEP): --
+// #define POWER_TEST_KEEP_LORA
+// #define POWER_TEST_KEEP_BLE
+// #define POWER_TEST_KEEP_WIFI
+
+// -- CPU frequency for LIGHT and CPU modes: --
+// #define POWER_TEST_CPU_240
+// #define POWER_TEST_CPU_160
+// #define POWER_TEST_CPU_80   // default
+// #define POWER_TEST_CPU_40
+
+#if defined(POWER_TEST_DEEP) || defined(POWER_TEST_LIGHT) || defined(POWER_TEST_CPU)
+#define POWER_TEST_ACTIVE
+
+static void powerTestInit() {
   Serial.begin(115200);
   delay(500);
-  Serial.println("=== POWER TEST ===");
 
-  // Kill LED
+#if defined(POWER_TEST_DEEP)
+  Serial.println("=== POWER TEST: deep sleep ===");
+#elif defined(POWER_TEST_LIGHT)
+  Serial.println("=== POWER TEST: light sleep ===");
+#else
+  Serial.println("=== POWER TEST: CPU spinning ===");
+#endif
+
   ledcAttach(LED_PIN, 1000, 11);
   ledcWrite(LED_PIN, 0);
-
-  // VEXT off (GPS, display backlight, anything on the external rail)
-  pinMode(VEXT_CTRL_PIN, OUTPUT); digitalWrite(VEXT_CTRL_PIN, LOW);
-  // VBAT divider off
+  pinMode(VEXT_CTRL_PIN, OUTPUT);     digitalWrite(VEXT_CTRL_PIN, LOW);
   pinMode(VBAT_ADC_CTRL_PIN, OUTPUT); digitalWrite(VBAT_ADC_CTRL_PIN, LOW);
 
-#ifndef POWER_TEST_KEEP_LORA
-  // Send SX1262 to sleep directly via SPI — avoids needing RadioLib in scope.
-  // SX1262 SetSleep opcode: 0x84, sleepConfig=0x00 (cold start, no RTC).
-  // Reset first to guarantee a known state.
-  pinMode(LORA_RST_PIN,  OUTPUT); digitalWrite(LORA_RST_PIN, LOW);
-  pinMode(LORA_NSS_PIN,  OUTPUT); digitalWrite(LORA_NSS_PIN, HIGH);
-  delay(2);
-  digitalWrite(LORA_RST_PIN, HIGH);
-  delay(10); // datasheet: 3.5ms reset period
+  // SX1262 is already in standby after reset; deep sleep mode costs ~0.6µA
+  // and prevents it responding to SPI glitches. Send SetSleep explicitly.
+  // (SX1262 comes out of HW reset in standby, not sleep — datasheet 8.1)
+#ifdef POWER_TEST_KEEP_LORA
+  bsLoraSPI.begin(LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN, LORA_NSS_PIN);
+  bsRadioInit();
+  Serial.println("SX1262: RX");
+#else
+  pinMode(LORA_NSS_PIN, OUTPUT); digitalWrite(LORA_NSS_PIN, HIGH);
   bsLoraSPI.begin(LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN, LORA_NSS_PIN);
   bsLoraSPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
   digitalWrite(LORA_NSS_PIN, LOW);
-  bsLoraSPI.transfer(0x84); // SetSleep
-  bsLoraSPI.transfer(0x00); // sleepConfig
+  bsLoraSPI.transfer(0x84); bsLoraSPI.transfer(0x00); // SetSleep, cold start
   digitalWrite(LORA_NSS_PIN, HIGH);
   bsLoraSPI.endTransaction();
   Serial.println("SX1262: sleep");
-#else
-  bsLoraSPI.begin(LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN, LORA_NSS_PIN);
-  bsRadioInit();
-  Serial.println("SX1262: RX (kept)");
 #endif
 
 #ifdef POWER_TEST_KEEP_BLE
   initBLE();
-  Serial.println("BLE: advertising (kept)");
+  Serial.println("BLE: advertising");
 #else
-  // Don't init BLE at all — stack never starts
-  Serial.println("BLE: off");
+  Serial.println("BLE: off (never inited)");
 #endif
 
 #ifdef POWER_TEST_KEEP_WIFI
-  WiF                                                                                              i.mode(WIFI_AP);
+  WiFi.mode(WIFI_AP);
   WiFi.softAP(WIFI_SSID, WIFI_PASS, WIFI_CHANNEL);
-  Serial.println("WiFi: AP (kept)");
+  Serial.println("WiFi: AP up");
 #else
   WiFi.mode(WIFI_OFF);
   esp_wifi_stop();
   Serial.println("WiFi: off");
 #endif
 
-  // Reduce CPU to 80MHz (lowest that keeps USB serial working; go to 10MHz if
-  // you're not using serial to read the measurement)
+#if defined(POWER_TEST_CPU_240)
+  setCpuFrequencyMhz(240);
+#elif defined(POWER_TEST_CPU_160)
+  setCpuFrequencyMhz(160);
+#elif defined(POWER_TEST_CPU_40)
+  setCpuFrequencyMhz(40);
+#else
   setCpuFrequencyMhz(80);
+#endif
+  Serial.print("CPU: "); Serial.print(getCpuFrequencyMhz()); Serial.println("MHz");
 
-  Serial.println("Sleeping forever — measure now.");
+  Serial.println("Ready — measure now.");
   Serial.flush();
-  delay(100);
-
-  esp_deep_sleep_start(); // deep sleep with no wakeup = lowest ESP32 quiescent
+  delay(200);
 }
-#endif // POWER_TEST
 
 void setup() {
-#ifdef POWER_TEST
-  powerTestSleep(); // never returns
+#ifdef POWER_TEST_ACTIVE
+  powerTestInit();
+
+#if defined(POWER_TEST_DEEP)
+  esp_deep_sleep_start(); // halts here — no wakeup source = sleep forever
+#elif defined(POWER_TEST_LIGHT)
+  // Timer wakeup every 10s so it doesn't sleep forever, but ratio is
+  // ~10s sleep / <1ms wake so duty cycle is effectively 100% sleep.
+  esp_sleep_enable_timer_wakeup(10ULL * 1000000ULL);
+  while (true) { esp_light_sleep_start(); }
+#else // POWER_TEST_CPU
+  while (true) { vTaskDelay(1); } // yield keeps TWDT happy
 #endif
+#endif // POWER_TEST_ACTIVE
 
   bootMicros = micros();  // Capture boot time for tagged serial timestamps
   //taggedSerial.begin(SERIAL_BAUD);
