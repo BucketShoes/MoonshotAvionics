@@ -974,10 +974,10 @@ void deinitBLE() {
 // everything down. Use POWER_TEST_KEEP_* flags to leave one subsystem running
 // and measure its contribution in isolation.
 //
-// #define POWER_TEST
-// #define POWER_TEST_KEEP_LORA   // leave SX1262 in RX
-// #define POWER_TEST_KEEP_BLE    // leave BLE advertising
-// #define POWER_TEST_KEEP_WIFI   // leave WiFi AP up
+ #define POWER_TEST
+ #define POWER_TEST_KEEP_LORA   // leave SX1262 in RX
+ #define POWER_TEST_KEEP_BLE    // leave BLE advertising
+ #define POWER_TEST_KEEP_WIFI   // leave WiFi AP up
 
 #ifdef POWER_TEST
 static void powerTestSleep() {
@@ -995,16 +995,21 @@ static void powerTestSleep() {
   pinMode(VBAT_ADC_CTRL_PIN, OUTPUT); digitalWrite(VBAT_ADC_CTRL_PIN, LOW);
 
 #ifndef POWER_TEST_KEEP_LORA
-  // Drive SX1262 into sleep via RST + NSS — if RadioLib isn't inited we just
-  // assert reset and leave NSS high so the SPI peripheral stays idle.
-  pinMode(LORA_RST_PIN,  OUTPUT); digitalWrite(LORA_RST_PIN,  LOW);
+  // Send SX1262 to sleep directly via SPI — avoids needing RadioLib in scope.
+  // SX1262 SetSleep opcode: 0x84, sleepConfig=0x00 (cold start, no RTC).
+  // Reset first to guarantee a known state.
+  pinMode(LORA_RST_PIN,  OUTPUT); digitalWrite(LORA_RST_PIN, LOW);
+  pinMode(LORA_NSS_PIN,  OUTPUT); digitalWrite(LORA_NSS_PIN, HIGH);
   delay(2);
   digitalWrite(LORA_RST_PIN, HIGH);
-  // Now init just enough to call sleep()
+  delay(10); // datasheet: 3.5ms reset period
   bsLoraSPI.begin(LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN, LORA_NSS_PIN);
-  SX1262 radio = new Module(LORA_NSS_PIN, LORA_DIO1_PIN, LORA_RST_PIN, LORA_BUSY_PIN, bsLoraSPI);
-  radio.begin(915.0, 125.0, 9, 5, 0x12, 2, 8); // don't care about params, just need the driver alive
-  radio.sleep();
+  bsLoraSPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
+  digitalWrite(LORA_NSS_PIN, LOW);
+  bsLoraSPI.transfer(0x84); // SetSleep
+  bsLoraSPI.transfer(0x00); // sleepConfig
+  digitalWrite(LORA_NSS_PIN, HIGH);
+  bsLoraSPI.endTransaction();
   Serial.println("SX1262: sleep");
 #else
   bsLoraSPI.begin(LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN, LORA_NSS_PIN);
@@ -1021,7 +1026,7 @@ static void powerTestSleep() {
 #endif
 
 #ifdef POWER_TEST_KEEP_WIFI
-  WiFi.mode(WIFI_AP);
+  WiF                                                                                              i.mode(WIFI_AP);
   WiFi.softAP(WIFI_SSID, WIFI_PASS, WIFI_CHANNEL);
   Serial.println("WiFi: AP (kept)");
 #else
