@@ -107,8 +107,7 @@ void nonblockingInit() {
       pinMode(VGNSS_CTRL_PIN, OUTPUT);
       digitalWrite(VGNSS_CTRL_PIN, HIGH);
 #endif
-      pinMode(VBAT_ADC_CTRL_PIN, OUTPUT);
-      digitalWrite(VBAT_ADC_CTRL_PIN, LOW);
+      pinMode(VBAT_ADC_CTRL_PIN, INPUT); // tri-state; nonblockingBattery() uses INPUT_PULLUP briefly
       pinMode(VBAT_ADC_PIN, INPUT);
       initTimestamp = now;
       initState = INIT_GPS_RST_LOW;
@@ -307,7 +306,8 @@ void nonblockingBattery() {
   switch (vbatPhase) {
     case VBAT_IDLE:
       if ((millis() - lastVbatCompleteMs) >= VBAT_READ_INTERVAL_MS) {
-        digitalWrite(VBAT_ADC_CTRL_PIN, HIGH);
+        // INPUT_PULLUP (~50kΩ) switches the NPN without burning base current
+        pinMode(VBAT_ADC_CTRL_PIN, INPUT_PULLUP);
         vbatPhaseStartUs = nowUs;
         vbatPhase = VBAT_SETTLING;
       }
@@ -315,7 +315,7 @@ void nonblockingBattery() {
     case VBAT_SETTLING:
       if ((nowUs - vbatPhaseStartUs) >= VBAT_SETTLE_US) {
         uint32_t adcMv = analogReadMilliVolts(VBAT_ADC_PIN);
-        digitalWrite(VBAT_ADC_CTRL_PIN, LOW);
+        pinMode(VBAT_ADC_CTRL_PIN, INPUT); // tri-state: base floating, transistor off
         if (batteryMv == 0) batteryMv = (uint16_t)(adcMv * VBAT_MULTIPLIER); else batteryMv = (uint16_t)(((((uint32_t)batteryMv)*900) + ((uint32_t)(adcMv * VBAT_MULTIPLIER)*100))/1000);
         lastVbatCompleteMs = millis();
         vbatPhase = VBAT_IDLE;

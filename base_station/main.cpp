@@ -49,15 +49,19 @@ bool bleEnabled = true;
 
 static void enableWifi() {
   if (wifiEnabled) return;
+  static bool serverStarted = false;
   WiFi.mode(WIFI_AP);
   WiFi.softAP(WIFI_SSID, WIFI_PASS, WIFI_CHANNEL);
-  httpServer.begin();
+  esp_wifi_set_max_tx_power(20); // 0.25dBm units
+  esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
+  if (!serverStarted) { httpServer.begin(); serverStarted = true; }
   wifiEnabled = true;
   Serial.println("WiFi: AP on");
 }
 
 static void disableWifi() {
   if (!wifiEnabled) return;
+  ws.closeAll(); // cleanly disconnect WebSocket clients before pulling WiFi
   WiFi.softAPdisconnect(true);
   WiFi.mode(WIFI_OFF);
   esp_wifi_stop();
@@ -67,14 +71,14 @@ static void disableWifi() {
 
 // Long flash = WiFi on, 5 short = WiFi off
 static void ledSignalWifiOn() {
-  ledcWrite(LED_PIN, 512);
+  ledcWrite(LED_PIN, 2047);
   delay(800);
   ledcWrite(LED_PIN, 0);
 }
 
 static void ledSignalWifiOff() {
   for (int i = 0; i < 5; i++) {
-    ledcWrite(LED_PIN, 512);
+    ledcWrite(LED_PIN, 2047);
     delay(80);
     ledcWrite(LED_PIN, 0);
     delay(80);
@@ -539,6 +543,21 @@ static bool tryExecuteLocalCommand(const uint8_t* pkt, size_t pktLen) {
       if (pktLen < 7 + 2 + HMAC_TRUNC_LEN) return false;
       uint16_t durationMs = (uint16_t)pkt[7] | ((uint16_t)pkt[8] << 8);
       bsRadioEnterLRListen(durationMs);
+      return true;
+    }
+
+    case 0x31: {  // ENABLE TRANSPORT — params: uint8 flags (TRANSPORT_WIFI=0x01, TRANSPORT_BLE=0x02)
+      if (pktLen < 7 + 1 + HMAC_TRUNC_LEN) return false;
+      uint8_t flags = pkt[7];
+      if (flags & TRANSPORT_WIFI) enableWifi();
+      // BLE disable/enable not supported at runtime — always on
+      return true;
+    }
+
+    case 0x32: {  // DISABLE TRANSPORT — params: uint8 flags
+      if (pktLen < 7 + 1 + HMAC_TRUNC_LEN) return false;
+      uint8_t flags = pkt[7];
+      if (flags & TRANSPORT_WIFI) disableWifi();
       return true;
     }
 
@@ -1032,7 +1051,7 @@ void deinitBLE() {
 #define POWER_TEST_KEEP_LORA
 //#define POWER_TEST_KEEP_BLE
 //#define POWER_TEST_KEEP_WIFI//80ma
-  
+
 // -- CPU frequency for LIGHT and CPU modes: --
  //#define POWER_TEST_CPU_240
 // #define POWER_TEST_CPU_160
@@ -1106,9 +1125,36 @@ static void powerTestInit() {
 #endif
   Serial.print("CPU: "); Serial.print(getCpuFrequencyMhz()); Serial.println("MHz");
 
-  Serial.println("Ready — measure now.");
-  Serial.flush();
-  delay(200);
+  // ADC ctrl pin characterisation: sample voltage in each pin state once per second.
+  // Measures: INPUT (tri-state), INPUT_PULLUP, then OUTPUT HIGH — in each case
+  // immediately after switching and again after 400µs settle, to check ramp time.
+  // Helps verify pullup approach gives comparable reading to direct drive.
+  analogSetAttenuation(ADC_11db);
+  auto adcMv = []() -> uint32_t { return (uint32_t)(analogReadMilliVolts(VBAT_ADC_PIN) * VBAT_MULTIPLIER); };
+
+  Serial.println("=== ADC ctrl characterisation (mV, once/sec) ===");
+  Serial.println("State           instant  +400us");
+  while (true) {
+    uint32_t v0, v1;
+
+    pinMode(VBAT_ADC_CTRL_PIN, INPUT);
+    v0 = adcMv(); delayMicroseconds(400); v1 = adcMv();
+    Serial.printf("INPUT (float)   %5u    %5u\n", v0, v1);
+
+    pinMode(VBAT_ADC_CTRL_PIN, INPUT_PULLUP);
+    v0 = adcMv(); delayMicroseconds(400); v1 = adcMv();
+    Serial.printf("INPUT_PULLUP    %5u    %5u\n", v0, v1);
+    pinMode(VBAT_ADC_CTRL_PIN, INPUT); // back off
+
+    pinMode(VBAT_ADC_CTRL_PIN, OUTPUT); digitalWrite(VBAT_ADC_CTRL_PIN, HIGH);
+    v0 = adcMv(); delayMicroseconds(400); v1 = adcMv();
+    Serial.printf("OUTPUT HIGH     %5u    %5u\n", v0, v1);
+    pinMode(VBAT_ADC_CTRL_PIN, INPUT);
+
+    Serial.println("---");
+    delay(1000);
+  }
+  // unreachable — loop above runs forever
 }
 #endif // defined(POWER_TEST_DEEP) || defined(POWER_TEST_LIGHT) || defined(POWER_TEST_CPU)
 
