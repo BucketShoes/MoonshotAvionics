@@ -1053,7 +1053,7 @@ void deinitBLE() {
 // -- CPU frequency for LIGHT and CPU modes: --
  //#define POWER_TEST_CPU_240
 // #define POWER_TEST_CPU_160
-#define POWER_TEST_CPU_80   // default
+//#define POWER_TEST_CPU_80   // default
 // #define POWER_TEST_CPU_40
 
 #if defined(POWER_TEST_DEEP) || defined(POWER_TEST_LIGHT) || defined(POWER_TEST_CPU)

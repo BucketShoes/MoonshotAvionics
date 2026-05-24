@@ -21,6 +21,7 @@
 
 #include "pyro.h"
 #include "config.h"
+#include "telemetry.h"
 
 #include <Arduino.h>
 #include <driver/rmt_tx.h>
@@ -136,6 +137,9 @@ void nonblockingPyro() {
     pyroState.hvMillivolts = (uint16_t)((pyroState.hvMillivolts * 9 + hvMv) / 10);
   }
   pyroState.hvPresent = (pyroState.hvMillivolts >= PYRO_HV_PRESENT_MV);
+
+  // Continuity and HV are re-read every loop — always fresh for all transports
+  logPages[LOGI_PYRO_STATUS].freshMask |= 0xFF;
 }
 
 // ===================== FIRE =====================

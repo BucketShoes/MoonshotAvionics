@@ -70,12 +70,11 @@ static void parseGGA(const char* sentence) {
   gps.alt  = atof(altStr);
   gps.altCm = gps.alt * 100.0;
   gps.valid = (gps.fix > 0);
-  if (gps.valid) {
-    gps.lastFixUs = micros();
-    logPages[LOGI_GPS_POS].freshMask |= 0xFF;
-    logPages[LOGI_GPS_EXTRA].freshMask |= 0xFF;
-    logPages[LOGI_TIMESTAMP].freshMask |= 0xFF;
-  }
+  if (gps.valid) gps.lastFixUs = micros();
+  // Freshen on every GGA parse, not just on fix — so no-fix state (sats, hdop) updates in dashboard
+  logPages[LOGI_GPS_POS].freshMask   |= 0xFF;
+  logPages[LOGI_GPS_EXTRA].freshMask |= 0xFF;
+  logPages[LOGI_TIMESTAMP].freshMask |= 0xFF;
 }
 
 static void parseRMC(const char* sentence) {

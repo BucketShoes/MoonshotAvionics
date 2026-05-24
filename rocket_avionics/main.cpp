@@ -352,8 +352,9 @@ void nonblockingPeakTracking() {
       logPages[LOGI_PEAKS].freshMask |= 0xFF;
     }
   }
-  // Sys health data (heap, uptime, battery) changes every loop — mark fresh
-  logPages[LOGI_SYS_HEALTH].freshMask |= 0xFF;
+  // Sys health and radio health change every loop — mark fresh
+  logPages[LOGI_SYS_HEALTH].freshMask  |= 0xFF;
+  logPages[LOGI_RADIO_HEALTH].freshMask |= 0xFF;
 }
 
 // ===================== RADIO TICK =====================
