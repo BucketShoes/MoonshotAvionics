@@ -47,6 +47,24 @@ unsigned long bootMicros = 0;
 bool wifiEnabled = false;
 bool bleEnabled = true;
 
+// ===================== HARDWARE =====================
+
+AsyncWebServer httpServer(80);
+AsyncWebSocket ws("/ws");
+LogStore logStore;
+bool logStoreOk = false;
+uint16_t baseBattMv = 0;
+
+void readBaseBattery() {
+  // VBAT_ADC_CTRL_PIN drives an NPN base with no series resistor on the PCB.
+  // Use INPUT_PULLUP (~50kΩ) to switch the transistor without burning 40mA.
+  pinMode(VBAT_ADC_CTRL_PIN, INPUT_PULLUP);
+  delayMicroseconds(400);
+  uint32_t adcMv = analogReadMilliVolts(VBAT_ADC_PIN);
+  pinMode(VBAT_ADC_CTRL_PIN, INPUT);  // tri-state: base floating, transistor off
+  baseBattMv = (uint16_t)(adcMv * VBAT_MULTIPLIER);
+}
+
 static void enableWifi() {
   if (wifiEnabled) return;
   static bool serverStarted = false;
@@ -83,26 +101,6 @@ static void ledSignalWifiOff() {
     ledcWrite(LED_PIN, 0);
     delay(80);
   }
-}
-
-
-
-// ===================== HARDWARE =====================
-
-AsyncWebServer httpServer(80);
-AsyncWebSocket ws("/ws");
-LogStore logStore;
-bool logStoreOk = false;
-uint16_t baseBattMv = 0;
-
-void readBaseBattery() {
-  // VBAT_ADC_CTRL_PIN drives an NPN base with no series resistor on the PCB.
-  // Use INPUT_PULLUP (~50kΩ) to switch the transistor without burning 40mA.
-  pinMode(VBAT_ADC_CTRL_PIN, INPUT_PULLUP);
-  delayMicroseconds(400);
-  uint32_t adcMv = analogReadMilliVolts(VBAT_ADC_PIN);
-  pinMode(VBAT_ADC_CTRL_PIN, INPUT);  // tri-state: base floating, transistor off
-  baseBattMv = (uint16_t)(adcMv * VBAT_MULTIPLIER);
 }
 
 Preferences bsNvs;
@@ -1045,7 +1043,7 @@ void deinitBLE() {
 // -- Uncomment one: --
 // #define POWER_TEST_DEEP
 //#define POWER_TEST_LIGHT
-#define POWER_TEST_CPU//20ma
+//#define POWER_TEST_CPU//20ma
 
 // -- Optionally add (not meaningful for DEEP): --
 #define POWER_TEST_KEEP_LORA
