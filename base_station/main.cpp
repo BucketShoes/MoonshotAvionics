@@ -984,9 +984,11 @@ void initBLE() {
     memcpy(&payload[pos], uuidBytes, 16); pos += 16;
     legacyAdv.setData(payload, pos);
 
-    NimBLEDevice::getAdvertising()->setInstanceData(0, legacyAdv);
+    bool ok0 = NimBLEDevice::getAdvertising()->setInstanceData(0, legacyAdv);
+    Serial.printf("BLE adv inst0 setData=%d\n", ok0 ? 1 : 0);
   }
-  NimBLEDevice::getAdvertising()->start(0);
+  bool start0 = NimBLEDevice::getAdvertising()->start(0);
+  Serial.printf("BLE adv inst0 start=%d\n", start0 ? 1 : 0);
 
   // Instance 1: extended, Coded PHY — for Android / long-range.
   // secondary_phy_opt left at 0 (no preference); controller defaults to S=8 for Coded PHY.
@@ -1002,9 +1004,11 @@ void initBLE() {
     codedAdv.addServiceUUID(BLE_SERVICE_UUID);
     codedAdv.setName(BLE_DEVICE_NAME);
 
-    NimBLEDevice::getAdvertising()->setInstanceData(1, codedAdv);
+    bool ok1 = NimBLEDevice::getAdvertising()->setInstanceData(1, codedAdv);
+    Serial.printf("BLE adv inst1 setData=%d\n", ok1 ? 1 : 0);
   }
-  NimBLEDevice::getAdvertising()->start(1);
+  bool start1 = NimBLEDevice::getAdvertising()->start(1);
+  Serial.printf("BLE adv inst1 start=%d\n", start1 ? 1 : 0);
 
   Serial.println("BLE GATT started");
 }
