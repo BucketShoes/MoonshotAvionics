@@ -1182,7 +1182,7 @@ void setup() {
 
   // Must downscale CPU before NimBLE init — BLE stack calibrates its timers at init time.
   // Downclocking after init causes connection instability.
-  setCpuFrequencyMhz(160);
+  setCpuFrequencyMhz(80);
   Serial.print("CPU: "); Serial.print(getCpuFrequencyMhz()); Serial.println("MHz");
 
   initBLE();
