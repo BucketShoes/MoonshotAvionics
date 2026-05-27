@@ -345,6 +345,7 @@ static void buildPage0E(uint8_t* buf, size_t* pos, uint16_t numSamples) {
 
   // --- Pass 2: encode ---
   int32_t range8 = (int32_t)(max16 / 8) - (int32_t)(min16 / 8);
+  if (range8 == 0) range8 = 1;
   for (uint16_t i = 0; i < N; i++) {
     uint16_t ringIdx = (uint16_t)((thrustBufHead + THRUST_BUF_SIZE - windowSamples + i * step) % THRUST_BUF_SIZE);
     int16_t val = thrustBuf[ringIdx];
