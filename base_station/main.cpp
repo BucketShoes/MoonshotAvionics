@@ -753,11 +753,6 @@ void onWsEvent(AsyncWebSocket *s, AsyncWebSocketClient *c, AwsEventType t, void 
 class BleServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer* server, NimBLEConnInfo& connInfo) override {
     bleClientConnected = true;
-    // Stop both advertising instances while a client is connected — prevents
-    // a second connection racing in and corrupting NimBLE's GAP update-entry
-    // list, which causes a null-deref crash on disconnect.
-    NimBLEDevice::getAdvertising()->stop(0);
-    NimBLEDevice::getAdvertising()->stop(1);
     Serial.print("BLE+ addr:"); Serial.println(connInfo.getAddress().toString().c_str());
     //TODO: @@@ force coded phy s=8
   }
@@ -765,10 +760,8 @@ class BleServerCallbacks : public NimBLEServerCallbacks {
     bleClientConnected = false;
     bleLogFetch.active = false;
     Serial.print("BLE- reason:"); Serial.println(reason);
-    // Restart advertising so a new client can connect. The loop's isActive()
-    // checks are now the only place advertising is started, so this is safe.
-    NimBLEDevice::getAdvertising()->start(0);
-    NimBLEDevice::getAdvertising()->start(1);
+    NimBLEDevice::startAdvertising(0);
+    NimBLEDevice::startAdvertising(1);
   }
 };
 
