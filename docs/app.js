@@ -381,7 +381,7 @@ function initCharts() {
     var e = document.getElementById('val-rssi-top');
     if (s === 127) { e.textContent = '--'; e.style.color = '#555'; return } 
     e.textContent = s.toFixed(1) + 'dB';
-    e.style.color = s > 60 ? '#0f0' : s > 80 ? '#ff0' : s > 100 ? '#f80' : '#f44'
+    e.style.color = s > -60 ? '#0f0' : s > -80 ? '#ff0' : s > -100 ? '#f80' : '#f44'
   }
 
   function decodeTelem(buf){var dv=new DataView(buf);if(dv.byteLength<10||dv.getUint8(0)!==0xAF)return null;var r={dev:dv.getUint8(1),latF:dv.getUint16(2,1),lonF:dv.getUint16(4,1),altM:dv.getInt16(6,1),flags:dv.getUint16(8,1),pg:null};if(dv.byteLength>10){var pt=dv.getUint8(10);var df=PD[pt];if(df&&dv.byteLength>=11+df.s){var pgTotalLen=dv.byteLength-11;r.pg={t:pt,d:df.d(dv,11,pgTotalLen)}}}return r}
