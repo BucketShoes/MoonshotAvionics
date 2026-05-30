@@ -761,21 +761,20 @@ void onWsEvent(AsyncWebSocket *s, AsyncWebSocketClient *c, AwsEventType t, void 
 
 class BleServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer* server, NimBLEConnInfo& connInfo) override {
-    bleClientConnected = true;
     bleTelemSubscribed = false;
-    Serial.printf("BLE+ addr:%s interval=%.2fms\n",
+    bleClientConnected = (server->getConnectedCount() > 0);
+    Serial.printf("BLE+ addr:%s interval=%.2fms clients=%u\n",
       connInfo.getAddress().toString().c_str(),
-      connInfo.getConnInterval() * 1.25f);
+      connInfo.getConnInterval() * 1.25f,
+      server->getConnectedCount());
     //TODO: @@@ force coded phy s=8
   }
   void onDisconnect(NimBLEServer* server, NimBLEConnInfo& connInfo, int reason) override {
-    bleClientConnected = false;
     bleTelemSubscribed = false;
     bleLogFetch.active = false;
-    Serial.printf("BLE- reason:%d subscribed_at_disconnect=%d\n",
-      reason, (int)bleTelemSubscribed);
-    NimBLEDevice::startAdvertising(0);
-    NimBLEDevice::startAdvertising(1);
+    bleClientConnected = (server->getConnectedCount() > 0);
+    Serial.printf("BLE- reason:%d clients_remaining=%u subscribed_at_disconnect=%d\n",
+      reason, server->getConnectedCount(), (int)bleTelemSubscribed);
   }
 };
 
