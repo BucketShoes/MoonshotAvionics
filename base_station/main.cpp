@@ -393,7 +393,16 @@ void pushToAllTransports(const uint8_t* wsBuf, size_t wsLen) {
     ws.binaryAll(wsBuf, wsLen);
   }
   if (bleEnabled && bleClientConnected && bleTelemChar) {
-    bleTelemChar->notify((uint8_t*)wsBuf, wsLen);
+    bool ok = bleTelemChar->notify((uint8_t*)wsBuf, wsLen);
+    static uint32_t bleNotifyOk = 0, bleNotifyFail = 0;
+    if (ok) bleNotifyOk++; else bleNotifyFail++;
+    static unsigned long lastBleLog = 0;
+    if (millis() - lastBleLog > 5000) {
+      lastBleLog = millis();
+      bool subscribed = bleTelemChar->getSubscribedCount() > 0;
+      Serial.printf("BLE telem: ok=%lu fail=%lu subscribed=%d\n",
+        (unsigned long)bleNotifyOk, (unsigned long)bleNotifyFail, subscribed ? 1 : 0);
+    }
   }
 }
 
@@ -753,13 +762,16 @@ void onWsEvent(AsyncWebSocket *s, AsyncWebSocketClient *c, AwsEventType t, void 
 class BleServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer* server, NimBLEConnInfo& connInfo) override {
     bleClientConnected = true;
-    Serial.print("BLE+ addr:"); Serial.println(connInfo.getAddress().toString().c_str());
+    Serial.printf("BLE+ addr:%s interval=%.2fms\n",
+      connInfo.getAddress().toString().c_str(),
+      connInfo.getConnInterval() * 1.25f);
     //TODO: @@@ force coded phy s=8
   }
   void onDisconnect(NimBLEServer* server, NimBLEConnInfo& connInfo, int reason) override {
     bleClientConnected = false;
     bleLogFetch.active = false;
-    Serial.print("BLE- reason:"); Serial.println(reason);
+    Serial.printf("BLE- reason:%d subscribed_at_disconnect=%d\n",
+      reason, bleTelemChar ? (int)bleTelemChar->getSubscribedCount() : -1);
     NimBLEDevice::startAdvertising(0);
     NimBLEDevice::startAdvertising(1);
   }
@@ -944,6 +956,11 @@ void initBLE() {
   NimBLEService* svc = bleServer->createService(BLE_SERVICE_UUID);
 
   bleTelemChar = svc->createCharacteristic(BLE_TELEM_CHAR_UUID, NIMBLE_PROPERTY::NOTIFY);
+  bleTelemChar->setCallbacks(new NimBLECharacteristicCallbacks() {
+    void onSubscribe(NimBLECharacteristic* chr, NimBLEConnInfo& info, uint16_t subValue) override {
+      Serial.printf("BLE telem subscribe: subValue=%u (1=notify,2=indicate,0=unsub)\n", subValue);
+    }
+  });
   bleCmdChar = svc->createCharacteristic(BLE_CMD_CHAR_UUID, NIMBLE_PROPERTY::WRITE);
   bleCmdChar->setCallbacks(new BleCmdCallbacks());
   bleStatusChar = svc->createCharacteristic(BLE_STATUS_CHAR_UUID, NIMBLE_PROPERTY::READ);
@@ -1182,7 +1199,7 @@ void setup() {
 
   // Must downscale CPU before NimBLE init — BLE stack calibrates its timers at init time.
   // Downclocking after init causes connection instability.
-  setCpuFrequencyMhz(80);
+  setCpuFrequencyMhz(160);
   Serial.print("CPU: "); Serial.print(getCpuFrequencyMhz()); Serial.println("MHz");
 
   initBLE();
