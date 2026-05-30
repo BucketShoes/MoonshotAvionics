@@ -124,6 +124,7 @@ NimBLECharacteristic* bleStatusChar = nullptr;
 NimBLECharacteristic* bleLogFetchChar = nullptr;
 NimBLECharacteristic* bleOtaChar = nullptr;
 bool bleClientConnected = false;
+bool bleTelemSubscribed = false;
 
 // ===================== OTA STATE MACHINE =====================
 #define OTA_STATUS_OK            0x00
@@ -399,9 +400,8 @@ void pushToAllTransports(const uint8_t* wsBuf, size_t wsLen) {
     static unsigned long lastBleLog = 0;
     if (millis() - lastBleLog > 5000) {
       lastBleLog = millis();
-      bool subscribed = bleTelemChar->getSubscribedCount() > 0;
       Serial.printf("BLE telem: ok=%lu fail=%lu subscribed=%d\n",
-        (unsigned long)bleNotifyOk, (unsigned long)bleNotifyFail, subscribed ? 1 : 0);
+        (unsigned long)bleNotifyOk, (unsigned long)bleNotifyFail, (int)bleTelemSubscribed);
     }
   }
 }
@@ -762,6 +762,7 @@ void onWsEvent(AsyncWebSocket *s, AsyncWebSocketClient *c, AwsEventType t, void 
 class BleServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer* server, NimBLEConnInfo& connInfo) override {
     bleClientConnected = true;
+    bleTelemSubscribed = false;
     Serial.printf("BLE+ addr:%s interval=%.2fms\n",
       connInfo.getAddress().toString().c_str(),
       connInfo.getConnInterval() * 1.25f);
@@ -769,9 +770,10 @@ class BleServerCallbacks : public NimBLEServerCallbacks {
   }
   void onDisconnect(NimBLEServer* server, NimBLEConnInfo& connInfo, int reason) override {
     bleClientConnected = false;
+    bleTelemSubscribed = false;
     bleLogFetch.active = false;
     Serial.printf("BLE- reason:%d subscribed_at_disconnect=%d\n",
-      reason, bleTelemChar ? (int)bleTelemChar->getSubscribedCount() : -1);
+      reason, (int)bleTelemSubscribed);
     NimBLEDevice::startAdvertising(0);
     NimBLEDevice::startAdvertising(1);
   }
@@ -847,6 +849,13 @@ class BleLogFetchCallbacks : public NimBLECharacteristicCallbacks {
       (unsigned long)startRec, (unsigned long)endRec);
     // Set active LAST so loopTask sees a fully-initialized state.
     bleLogFetch.active = true;
+  }
+};
+
+class BleTelemCallbacks : public NimBLECharacteristicCallbacks {
+  void onSubscribe(NimBLECharacteristic* chr, NimBLEConnInfo& connInfo, uint16_t subValue) override {
+    bleTelemSubscribed = (subValue != 0);
+    Serial.printf("BLE telem subscribe: subValue=%u (1=notify,0=unsub)\n", subValue);
   }
 };
 
@@ -956,11 +965,7 @@ void initBLE() {
   NimBLEService* svc = bleServer->createService(BLE_SERVICE_UUID);
 
   bleTelemChar = svc->createCharacteristic(BLE_TELEM_CHAR_UUID, NIMBLE_PROPERTY::NOTIFY);
-  bleTelemChar->setCallbacks(new NimBLECharacteristicCallbacks() {
-    void onSubscribe(NimBLECharacteristic* chr, NimBLEConnInfo& info, uint16_t subValue) override {
-      Serial.printf("BLE telem subscribe: subValue=%u (1=notify,2=indicate,0=unsub)\n", subValue);
-    }
-  });
+  bleTelemChar->setCallbacks(new BleTelemCallbacks());
   bleCmdChar = svc->createCharacteristic(BLE_CMD_CHAR_UUID, NIMBLE_PROPERTY::WRITE);
   bleCmdChar->setCallbacks(new BleCmdCallbacks());
   bleStatusChar = svc->createCharacteristic(BLE_STATUS_CHAR_UUID, NIMBLE_PROPERTY::READ);
