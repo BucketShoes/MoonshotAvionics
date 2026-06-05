@@ -54,6 +54,30 @@
   #define LORA_FEM_EN_PIN       2    // always HIGH after init (amplifier enable)
   #define LORA_FEM_CTL_PIN      7    // always HIGH after init (antenna control)
   #define LORA_FEM_PA_PIN       46   // HIGH during TX, LOW during RX (PA bypass)
+/*
+//TODO: need to fix this - i think we might have been using the wrong fem settings. todo; figure out what these do in arduino or the heltec code. probable the fem - pa_ctx / pa_csd / vfem ctrl?
+//figure ou twhat the bolow stuff causes in the heltec/arduino stack and make sure we apply it, too
+For the WiFi LoRa 32 V4 development board, different hardware revisions also require selecting the correct LoRa FEM option in the Tools menu.
+
+V4.2, select USE_GC1109_PA.
+V4.3, select USE_KCT8103L_PA.
+
+2026-2-25 update
+
+The FEM chip has been upgraded to KCT8103L, allowing software control over whether the RX signal path passes through the LNA.
+
+GPIO Adjustments
+
+GPIO5 has been reassigned as the FEM control pin.
+
+GPIO46 is now reserved as an available GPIO for user applications.
+
+*/
+
+//TODO: add tracker v2 - its same generation as lora32 v4 
+//so it has the external fem/pa, but it has the built in uc6580 and other pins on different gpios
+//uses tft not oled, so not a shared i2c bus, etc
+ //pa_ctx on gpio4/ pa_csd on gpio4 and vfem ctrl on gpio7
 
 #else
   #error "No board defined. Add -DBOARD_WIRELESS_TRACKER or -DBOARD_LORA32_V4 to platformio.ini build_flags."
