@@ -1,6 +1,7 @@
-// Base Station / Relay - Heltec Wireless Tracker V1.1
+// Base Station / Relay — multi-board: Heltec Wireless Tracker V1.1, WiFi LoRa 32 V4
 // Supports multiple transports: WiFi/WebSocket, BLE GATT, (future: USB Serial)
 // BLE allows the phone to maintain mobile internet while connected to base station.
+// Select board with -DBOARD_WIRELESS_TRACKER or -DBOARD_LORA32_V4 in platformio.ini.
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
@@ -14,11 +15,9 @@
 #include "radio.h"
 //#include "tagged_serial.h"  // Serial wrapper that prefixes boot-relative micros
 
-#define VEXT_CTRL_PIN 3
-#define VBAT_ADC_PIN      1
-#define VBAT_ADC_CTRL_PIN 2
+// VEXT_CTRL_PIN, VBAT_ADC_PIN, VBAT_ADC_CTRL_PIN, LED_PIN, USER_BTN_PIN
+// are board-specific — pulled in via radio.h → board_config.h.
 #define VBAT_MULTIPLIER   4.9f
-#define USER_BTN_PIN      0   // GPIO0 / BOOT button on Tracker v1.1
 
 #define SERIAL_BAUD   2000000
 #include "secrets.h"  // gitignored — copy secrets_example.h to secrets.h
@@ -1097,7 +1096,10 @@ static void powerTestInit() {
 
   ledcAttach(LED_PIN, 1000, 11);
   ledcWrite(LED_PIN, 0);
-  pinMode(VEXT_CTRL_PIN, OUTPUT);     digitalWrite(VEXT_CTRL_PIN, LOW);
+  pinMode(VEXT_CTRL_PIN, OUTPUT); digitalWrite(VEXT_CTRL_PIN, LOW);
+#ifdef VGNSS_CTRL_PIN
+  pinMode(VGNSS_CTRL_PIN, OUTPUT); digitalWrite(VGNSS_CTRL_PIN, LOW);
+#endif
   pinMode(VBAT_ADC_CTRL_PIN, INPUT);  // tri-state; readBaseBattery() switches to INPUT_PULLUP briefly
 
   // SX1262 is already in standby after reset; deep sleep mode costs ~0.6µA
@@ -1211,7 +1213,10 @@ void setup() {
   ledcAttach(LED_PIN, 1000, 11);
   ledcWrite(LED_PIN, 50);
 
-  pinMode(VEXT_CTRL_PIN, OUTPUT); digitalWrite(VEXT_CTRL_PIN, LOW); //dont need gps, etc
+  pinMode(VEXT_CTRL_PIN, OUTPUT); digitalWrite(VEXT_CTRL_PIN, LOW);  // peripherals off
+#ifdef VGNSS_CTRL_PIN
+  pinMode(VGNSS_CTRL_PIN, OUTPUT); digitalWrite(VGNSS_CTRL_PIN, LOW);  // GNSS module off (V4 only)
+#endif
   pinMode(VBAT_ADC_CTRL_PIN, INPUT);  // tri-state; readBaseBattery() switches to INPUT_PULLUP briefly
   analogSetAttenuation(ADC_11db);
   readBaseBattery();

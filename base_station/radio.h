@@ -8,8 +8,10 @@
 #include <SPI.h>
 #include "../common/radio_config.h"
 #include "../common/radio_helpers.h"
+#include "../common/board_config.h"
 
 // ===================== PIN DEFINITIONS =====================
+// LoRa SPI/module pins are the same on all supported boards.
 
 #define LORA_NSS_PIN  8
 #define LORA_SCK_PIN  9
@@ -19,7 +21,8 @@
 #define LORA_BUSY_PIN 13
 #define LORA_DIO1_PIN 14
 
-#define LED_PIN       18
+// LED_PIN, USER_BTN_PIN, VEXT_CTRL_PIN, VBAT_ADC_PIN, VBAT_ADC_CTRL_PIN
+// are board-specific — defined in board_config.h above.
 
 // ===================== BASE-LOCAL =====================
 

@@ -12,6 +12,23 @@ static inline void ledOnTX() { ledcWrite(LED_PIN, 64); }
 static inline void ledOnRX() { ledcWrite(LED_PIN, 5); }
 static inline void ledOff()  { ledcWrite(LED_PIN, 0); }
 
+// ===================== FEM CONTROL (LoRa32 V4 only) =====================
+// EN and CTL are held HIGH permanently after init; PA pin is HIGH during TX,
+// LOW during RX. Pin assignments in board_config.h.
+#ifdef BOARD_LORA32_V4
+static inline void femInitPins() {
+  pinMode(LORA_FEM_EN_PIN,  OUTPUT); digitalWrite(LORA_FEM_EN_PIN,  HIGH);
+  pinMode(LORA_FEM_CTL_PIN, OUTPUT); digitalWrite(LORA_FEM_CTL_PIN, HIGH);
+  pinMode(LORA_FEM_PA_PIN,  OUTPUT); digitalWrite(LORA_FEM_PA_PIN,  LOW);
+}
+static inline void femTX() { digitalWrite(LORA_FEM_PA_PIN, HIGH); }
+static inline void femRX() { digitalWrite(LORA_FEM_PA_PIN, LOW);  }
+#else
+static inline void femInitPins() {}
+static inline void femTX()      {}
+static inline void femRX()      {}
+#endif
+
 // ===================== HARDWARE / GLOBALS =====================
 
 SPIClass     bsLoraSPI(FSPI);
@@ -56,6 +73,7 @@ void bsUpdateActiveFreqBw() {
 // ===================== INIT =====================
 
 bool bsRadioInit() {
+  femInitPins();
   bsUpdateActiveFreqBw();
 
   int st = radio.begin(activeFreqMHz, activeBwKHz, activeSF,
@@ -78,6 +96,7 @@ bool bsRadioInit() {
 
   bsLoraReady  = true;
   bsRadioState = BS_RADIO_RX;
+  femRX();
   ledOnRX();
   return true;
 }
@@ -98,7 +117,7 @@ void bsRadioApplyConfig() {
 
   dio1Flag = false;
   int st = radio.startReceive();
-  if (st == RADIOLIB_ERR_NONE) { bsRadioState = BS_RADIO_RX; ledOnRX(); }
+  if (st == RADIOLIB_ERR_NONE) { femRX(); bsRadioState = BS_RADIO_RX; ledOnRX(); }
   else                         { bsRadioState = BS_RADIO_OFF; ledOff(); }
 }
 
@@ -118,7 +137,7 @@ static void bsApplyLRMode() {
   radio.implicitHeader(LORA_LR_IMPLICIT_LEN);
   dio1Flag = false;
   int st = radio.startReceive();
-  if (st == RADIOLIB_ERR_NONE) { bsRadioState = BS_RADIO_RX; ledOnRX(); }
+  if (st == RADIOLIB_ERR_NONE) { femRX(); bsRadioState = BS_RADIO_RX; ledOnRX(); }
   else                         { bsRadioState = BS_RADIO_OFF; ledOff(); }
 }
 
@@ -128,7 +147,7 @@ static void bsRevertFromLRMode() {
   radio.explicitHeader();
   dio1Flag = false;
   int st = radio.startReceive();
-  if (st == RADIOLIB_ERR_NONE) { bsRadioState = BS_RADIO_RX; ledOnRX(); }
+  if (st == RADIOLIB_ERR_NONE) { femRX(); bsRadioState = BS_RADIO_RX; ledOnRX(); }
   else                         { bsRadioState = BS_RADIO_OFF; ledOff(); }
 }
 
@@ -171,9 +190,11 @@ bool bsRadioStartTx(const uint8_t* pkt, size_t len, bool forceThroughBusy) {
 
   radio.standby();
   dio1Flag = false;
+  femTX();
   int st = radio.startTransmit((uint8_t*)pkt, len);
   if (st != RADIOLIB_ERR_NONE) {
     bsTxFailCount++;
+    femRX();
     radio.startReceive();
     bsRadioState = BS_RADIO_RX;
     ledOnRX();
@@ -207,6 +228,7 @@ void bsRadioPoll() {
     bsTxFailCount++;
     radio.standby();
     dio1Flag = false;
+    femRX();
     int st = radio.startReceive();
     if (st == RADIOLIB_ERR_NONE) { bsRadioState = BS_RADIO_RX; ledOnRX(); }
     else                         { bsRadioState = BS_RADIO_OFF; ledOff(); }
@@ -219,6 +241,7 @@ void bsRadioPoll() {
   if (bsRadioState == BS_RADIO_TX) {
     radio.finishTransmit();
     bsTxCount++;
+    femRX();
     int st = radio.startReceive();
     if (st == RADIOLIB_ERR_NONE) { bsRadioState = BS_RADIO_RX; ledOnRX(); }
     else                         { bsRadioState = BS_RADIO_OFF; ledOff(); }
@@ -230,6 +253,7 @@ void bsRadioPoll() {
   uint8_t buf[256];
   if (len == 0 || len > sizeof(buf)) {
     bsRxFailCount++;
+    femRX();
     radio.startReceive();
     bsRadioState = BS_RADIO_RX;
     ledOnRX();
@@ -239,6 +263,7 @@ void bsRadioPoll() {
   float rssi = radio.getRSSI();
   float snr  = radio.getSNR();
 
+  femRX();
   radio.startReceive();
   bsRadioState = BS_RADIO_RX;
   ledOnRX();
