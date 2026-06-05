@@ -5,7 +5,7 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-#include "board_config.h"
+#include "../common/board_config.h"
 #include "../common/radio_config.h"
 #include "../common/radio_helpers.h"
 

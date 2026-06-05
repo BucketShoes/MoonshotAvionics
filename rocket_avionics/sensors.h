@@ -18,7 +18,7 @@
 
 #include <Arduino.h>
 #include <Wire.h>
-#include "board_config.h"
+#include "../common/board_config.h"
 #include "telemetry.h"
 
 // I2C pin config defined in board_config.h (SENSOR_SDA_PIN, SENSOR_SCL_PIN)

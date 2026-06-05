@@ -1,6 +1,8 @@
 // board_config.h — Hardware pin assignments, switchable per board variant.
 // Single source of truth for all board-specific GPIO mappings.
-// Include this in config.h and sensors.h; use the resulting defines throughout.
+// Applies to both rocket_avionics and base_station firmware.
+// Include via config.h (rocket) or directly (base station).
+// Select board with -DBOARD_WIRELESS_TRACKER or -DBOARD_LORA32_V4 in platformio.ini build_flags.
 
 #ifndef BOARD_CONFIG_H
 #define BOARD_CONFIG_H
@@ -13,6 +15,7 @@
   #define VBAT_ADC_CTRL_PIN     2
   #define VBAT_ADC_PIN          1
   #define LED_PIN               18
+  #define USER_BTN_PIN          0    // GPIO0 / BOOT button
   #define GPS_RX_PIN            33
   #define GPS_TX_PIN            34
   #define GPS_RST_PIN           35
@@ -36,6 +39,7 @@
   #define VBAT_ADC_CTRL_PIN     37
   #define VBAT_ADC_PIN          1    // same ADC pin, different control
   #define LED_PIN               35
+  #define USER_BTN_PIN          0    // GPIO0 / BOOT button (same physical pin)
   #define GPS_RX_PIN            38   // L76K GNSS module UART
   #define GPS_TX_PIN            39
   #define GPS_RST_PIN           42
@@ -74,7 +78,7 @@ GPIO46 is now reserved as an available GPIO for user applications.
 
 */
 
-//TODO: add tracker v2 - its same generation as lora32 v4 
+//TODO: add tracker v2 - its same generation as lora32 v4
 //tracker v2 has the external fem/pa, but it has the built in uc6580 and other pins on different gpios
 //uses tft not oled, so not a shared i2c bus, etc
  //pa_ctx on gpio4/ pa_csd on gpio4 and vfem ctrl on gpio7
