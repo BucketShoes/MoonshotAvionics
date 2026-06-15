@@ -662,6 +662,166 @@ function initCharts() {
     setTimeout(function(){URL.revokeObjectURL(a.href);},1000);
   }
 
+  // Export loaded records to CSV from a raw .bin file (same wire format as Save/Load).
+  // Accepts an ArrayBuffer of the .bin file — does NOT use allFetched so it works
+  // even if the session hasn't been loaded into memory.
+  // One row per log record. Columns left blank when the record doesn't carry that field.
+  function exportBinToCsv(buf) {
+    var dv = new DataView(buf);
+    var len = buf.byteLength;
+    var off = 0;
+
+    var HEADER = [
+      'rec_num','ts_ms','snr',
+      // 0xAF telem header
+      'fusion_alt_m','flight_phase','armed','pyro1_fired','pyro2_fired','pyro3_fired',
+      'baro_ok','accel_ok','arm_ready',
+      // 0x01 GPS position
+      'gps_lat_1e7','gps_lon_1e7','gps_hdop_x10','gps_sats',
+      // 0x02 baro + velocity
+      'baro_alt_cm','vert_vel_0_1ms','ground_level_m',
+      // 0x06 GPS extra + alt
+      'gps_spd_cms','gps_course_0_01deg','gps_fix_age_100ms','gps_vdop_x10','gps_alt_cm',
+      // 0x07 Kalman
+      'kalman_alt_cm_agl','kalman_vel_0_1ms',
+      // 0x08 system health
+      'board_temp_c','free_heap_kb','uptime_s','batt_mv',
+      // 0x09 peaks
+      'peak_alt_cm','peak_accel_0_01g','peak_vel_0_1ms',
+      // 0x0B flight status
+      'ms_since_launch','pyro_ch1_cont','pyro_ch1_fired','pyro_ch2_cont','pyro_ch2_fired',
+      'chute_cont','chute_fired',
+      // 0x0D UTC timestamp
+      'utc_ms',
+      // 0x04 accelerometer
+      'accel_x_mg','accel_y_mg','accel_z_mg',
+      // 0x05 gyro
+      'gyro_x_0_1degs','gyro_y_0_1degs','gyro_z_0_1degs',
+    ];
+    var nCols = HEADER.length;
+
+    // Pre-compute column indices for fast O(1) lookup in the hot loop
+    var CI = {};
+    for (var ci = 0; ci < HEADER.length; ci++) CI[HEADER[ci]] = ci;
+
+    var rows = [HEADER.join(',')];
+    var recCount = 0;
+    var row; // declared here so decodePage closure can access it
+
+    // Decode a data page; pdv2 is DataView of the full record, pageOff points to the type byte
+    function decodePage(pdv2, pageOff, pageLen) {
+      if (pageLen < 1) return;
+      var pt = pdv2.getUint8(pageOff); pageOff++; pageLen--;
+      if (pt === 0x01 && pageLen >= 10) {
+        row[CI.gps_lat_1e7]       = pdv2.getInt32(pageOff,   true);
+        row[CI.gps_lon_1e7]       = pdv2.getInt32(pageOff+4, true);
+        row[CI.gps_hdop_x10]      = pdv2.getUint8(pageOff+8);
+        row[CI.gps_sats]          = pdv2.getUint8(pageOff+9);
+      } else if (pt === 0x02 && pageLen >= 8) {
+        row[CI.baro_alt_cm]       = pdv2.getInt32(pageOff,   true);
+        row[CI.vert_vel_0_1ms]    = pdv2.getInt16(pageOff+4, true);
+        row[CI.ground_level_m]    = pdv2.getInt16(pageOff+6, true);
+      } else if (pt === 0x04 && pageLen >= 6) {
+        row[CI.accel_x_mg]        = pdv2.getInt16(pageOff,   true);
+        row[CI.accel_y_mg]        = pdv2.getInt16(pageOff+2, true);
+        row[CI.accel_z_mg]        = pdv2.getInt16(pageOff+4, true);
+      } else if (pt === 0x05 && pageLen >= 6) {
+        row[CI.gyro_x_0_1degs]    = pdv2.getInt16(pageOff,   true);
+        row[CI.gyro_y_0_1degs]    = pdv2.getInt16(pageOff+2, true);
+        row[CI.gyro_z_0_1degs]    = pdv2.getInt16(pageOff+4, true);
+      } else if (pt === 0x06 && pageLen >= 10) {
+        row[CI.gps_spd_cms]       = pdv2.getUint16(pageOff,   true);
+        row[CI.gps_course_0_01deg]= pdv2.getUint16(pageOff+2, true);
+        row[CI.gps_fix_age_100ms] = pdv2.getUint8(pageOff+4);
+        row[CI.gps_vdop_x10]      = pdv2.getUint8(pageOff+5);
+        row[CI.gps_alt_cm]        = pdv2.getInt32(pageOff+6, true);
+      } else if (pt === 0x07 && pageLen >= 6) {
+        row[CI.kalman_alt_cm_agl] = pdv2.getInt32(pageOff,   true);
+        row[CI.kalman_vel_0_1ms]  = pdv2.getInt16(pageOff+4, true);
+      } else if (pt === 0x08 && pageLen >= 11) {
+        row[CI.board_temp_c]      = pdv2.getInt8(pageOff);
+        row[CI.free_heap_kb]      = pdv2.getUint16(pageOff+1, true);
+        row[CI.uptime_s]          = pdv2.getUint16(pageOff+3, true);
+        row[CI.batt_mv]           = pdv2.getUint16(pageOff+5, true);
+      } else if (pt === 0x09 && pageLen >= 8) {
+        row[CI.peak_alt_cm]       = pdv2.getInt32(pageOff,   true);
+        row[CI.peak_accel_0_01g]  = pdv2.getUint16(pageOff+4, true);
+        row[CI.peak_vel_0_1ms]    = pdv2.getInt16(pageOff+6, true);
+      } else if (pt === 0x0B && pageLen >= 6) {
+        var msLaunch = pdv2.getInt32(pageOff, true);
+        var pyroF    = pdv2.getUint16(pageOff+4, true);
+        row[CI.ms_since_launch]   = msLaunch;
+        row[CI.pyro_ch1_cont]     = (pyroF>>0)&1;
+        row[CI.pyro_ch1_fired]    = (pyroF>>1)&1;
+        row[CI.pyro_ch2_cont]     = (pyroF>>3)&1;
+        row[CI.pyro_ch2_fired]    = (pyroF>>4)&1;
+        row[CI.chute_cont]        = (pyroF>>6)&1;
+        row[CI.chute_fired]       = (pyroF>>7)&1;
+      } else if (pt === 0x0D && pageLen >= 8) {
+        var lo = pdv2.getUint32(pageOff,   true);
+        var hi = pdv2.getUint32(pageOff+4, true);
+        row[CI.utc_ms]            = lo + hi * 4294967296;
+      }
+    }
+
+    while (off + 10 <= len) {
+      var rn  = dv.getUint32(off, true); off += 4;
+      var pl  = dv.getUint8(off);        off++;
+      var sn  = dv.getInt8(off);         off++;
+      var ts  = dv.getUint32(off, true); off += 4;
+
+      if (pl === 0xFF || off + pl > len) break;  // end marker or truncated
+
+      off += pl;
+
+      if (pl === 0) continue;
+
+      row = new Array(nCols).fill('');
+      row[CI.rec_num] = rn;
+      row[CI.ts_ms]   = ts;
+      row[CI.snr]     = sn / 4;
+
+      var pdv = new DataView(buf, off - pl, pl);
+      var b0  = new Uint8Array(buf, off - pl, 1)[0];
+
+      if (b0 === 0xAF && pl >= 10) {
+        // Telem packet: 10-byte header, then optional data page
+        var fusAlt = pdv.getInt16(6, true);
+        var flags  = pdv.getUint16(8, true);
+        row[CI.fusion_alt_m]  = fusAlt === -32768 ? '' : fusAlt;
+        row[CI.flight_phase]  = flags & 0xF;
+        row[CI.armed]         = (flags >> 4) & 1;
+        row[CI.pyro1_fired]   = (flags >> 5) & 1;
+        row[CI.pyro2_fired]   = (flags >> 6) & 1;
+        row[CI.pyro3_fired]   = (flags >> 7) & 1;
+        row[CI.baro_ok]       = (flags >> 9)  & 1;
+        row[CI.accel_ok]      = (flags >> 10) & 1;
+        row[CI.arm_ready]     = (flags >> 11) & 1;
+        if (pl > 10) decodePage(pdv, 10, pl - 10);
+      } else if (b0 <= 0x7F) {
+        // Raw data page logged directly
+        decodePage(pdv, 0, pl);
+      }
+      // Other packet types (0x80+ non-AF) get rec_num/ts/snr only
+
+      rows.push(row.join(','));
+      recCount++;
+    }
+
+    console.log('[csv] exported ' + recCount + ' records');
+
+    var csv = rows.join('\r\n');
+    var blob = new Blob([csv], {type: 'text/csv'});
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    var d = new Date();
+    var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
+    a.download = 'moonshot-' + d.getFullYear() + pad(d.getMonth()+1) + pad(d.getDate()) +
+                 '-' + pad(d.getHours()) + pad(d.getMinutes()) + '.csv';
+    a.click();
+    setTimeout(function() { URL.revokeObjectURL(a.href); }, 2000);
+  }
+
   function loadFetchedFromBytes(buf){
     var dv=new DataView(buf);
     var r=parseFetchPdu(dv);
@@ -2930,6 +3090,14 @@ function initCharts() {
       var f = ev.target.files && ev.target.files[0]; if (!f) return;
       var rd = new FileReader();
       rd.onload = function(){ loadFetchedFromBytes(rd.result); };
+      rd.readAsArrayBuffer(f);
+      ev.target.value = '';
+    });
+    document.getElementById('btn-export-csv').addEventListener('click', function(){ document.getElementById('file-export-csv').click(); });
+    document.getElementById('file-export-csv').addEventListener('change', function(ev){
+      var f = ev.target.files && ev.target.files[0]; if (!f) return;
+      var rd = new FileReader();
+      rd.onload = function(){ exportBinToCsv(rd.result); };
       rd.readAsArrayBuffer(f);
       ev.target.value = '';
     });

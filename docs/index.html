@@ -87,7 +87,9 @@ document.write('<link rel="stylesheet" href="style.css?_='+Date.now()+'">');
       <button id="btn-stop" style="display:none">Stop</button>
       <button id="btn-save-fetch" title="Download fetched bytes">Save</button>
       <button id="btn-load-fetch" title="Load fetched bytes">Load</button>
-      <input type="file" id="file-load-fetch" style="display:none" accept=".bin,application/octet-stream"><br />
+      <button id="btn-export-csv" title="Export .bin file to CSV for analysis">Export CSV</button>
+      <input type="file" id="file-load-fetch" style="display:none" accept=".bin,application/octet-stream">
+      <input type="file" id="file-export-csv" style="display:none" accept=".bin,application/octet-stream"><br />
       <span id="fst" style="display:inline-block;min-width:28em;font-size:10px;color:#666;font-family:monospace;white-space:pre"></span><br />
       <button id="btn-prev" disabled>&lt;Prev</button>
       <span id="sess-info" style="display:inline-block;min-width:14em;text-align:center">Live</span>
