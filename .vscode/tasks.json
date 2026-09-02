@@ -1,50 +1,112 @@
 {
     "version": "2.0.0",
+    "inputs": [
+        {
+            "id": "baseEnv",
+            "type": "pickString",
+            "description": "Base station board",
+            "default": "moonbase_lora32v43",
+            "options": [
+                "moonbase_lora32v43",
+                "moonbase_lora32v41",
+                "moonbase_trackerv1"
+            ]
+        },
+        {
+            "id": "rocketEnv",
+            "type": "pickString",
+            "description": "Flight unit board",
+            "default": "moonshot_trackerv1",
+            "options": [
+                "moonshot_trackerv1",
+                "moonshot_lora32v43"
+            ]
+        }
+    ],
     "tasks": [
         {
-            "label": "Flash & Monitor Rocket",
+            "label": "Flash & Monitor Rocket (Tracker V1.1)",
             "type": "shell",
             "command": "powershell",
             "args": [
                 "-NoProfile",
                 "-ExecutionPolicy", "Bypass",
-                "-File", "${workspaceFolder}/flash_and_monitor_rocket.ps1"
+                "-File", "${workspaceFolder}/flash_and_monitor.ps1",
+                "-Env", "moonshot_trackerv1",
+                "-Label", "ROCKET"
             ],
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "close": false
-            },
+            "presentation": { "reveal": "always", "panel": "dedicated", "close": false },
             "problemMatcher": []
         },
         {
-            "label": "Flash & Monitor Base Station",
+            "label": "Flash & Monitor Base Station (LoRa32 V4.3)",
             "type": "shell",
             "command": "powershell",
             "args": [
                 "-NoProfile",
                 "-ExecutionPolicy", "Bypass",
-                "-File", "${workspaceFolder}/flash_and_monitor_base_station.ps1"
+                "-File", "${workspaceFolder}/flash_and_monitor.ps1",
+                "-Env", "moonbase_lora32v43",
+                "-Label", "BASE STATION",
+                "-Fs"
             ],
-            "presentation": {
-                "reveal": "always",
-                "panel": "dedicated",
-                "close": false
-            },
+            "presentation": { "reveal": "always", "panel": "dedicated", "close": false },
+            "problemMatcher": []
+        },
+        {
+            "label": "Flash & Monitor Base Station (Tracker V1.1)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-File", "${workspaceFolder}/flash_and_monitor.ps1",
+                "-Env", "moonbase_trackerv1",
+                "-Label", "BASE STATION",
+                "-Fs"
+            ],
+            "presentation": { "reveal": "always", "panel": "dedicated", "close": false },
+            "problemMatcher": []
+        },
+        {
+            "label": "Flash & Monitor Base Station (pick board)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-File", "${workspaceFolder}/flash_and_monitor.ps1",
+                "-Env", "${input:baseEnv}",
+                "-Label", "BASE STATION",
+                "-Fs"
+            ],
+            "presentation": { "reveal": "always", "panel": "dedicated", "close": false },
+            "problemMatcher": []
+        },
+        {
+            "label": "Flash & Monitor Rocket (pick board)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-File", "${workspaceFolder}/flash_and_monitor.ps1",
+                "-Env", "${input:rocketEnv}",
+                "-Label", "ROCKET"
+            ],
+            "presentation": { "reveal": "always", "panel": "dedicated", "close": false },
             "problemMatcher": []
         },
         {
             "label": "Flash & Monitor Both",
-            "dependsOn": ["Flash & Monitor Rocket", "Flash & Monitor Base Station"],
+            "detail": "Ctrl+Shift+B — Tracker V1.1 rocket on COM13 + LoRa32 V4.3 base on COM9",
+            "dependsOn": [
+                "Flash & Monitor Rocket (Tracker V1.1)",
+                "Flash & Monitor Base Station (LoRa32 V4.3)"
+            ],
             "dependsOrder": "parallel",
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            },
-            "presentation": {
-                "reveal": "silent",
-                "panel": "shared"
-            },
+            "group": { "kind": "build", "isDefault": true },
+            "presentation": { "reveal": "silent", "panel": "shared" },
             "problemMatcher": []
         }
     ]

@@ -55,11 +55,40 @@ boring/canonical way:
 ## System overview
 
 ```
-rocket_avionics/         ESP32-C3 firmware (primary focus)
-base_station/            ESP32 base station firmware
+rocket_avionics/         ESP32-S3 flight unit firmware (primary focus)
+base_station/            ESP32-S3 base station firmware
+common/                  Shared headers: board_config.h, radio_config.h, log_store.h
 docs/                    Web dashboard (JS/HTML/CSS)
 design documents/        Specifications — see index below
 ```
+
+## Supported hardware
+
+Two board families, two generations, on independent axes. `common/board_config.h`
+is the single source of truth for pins; firmware tests **capability flags**
+(`BOARD_HAS_FEM`), never the board macro.
+
+| PlatformIO env | Board | Notes |
+|---|---|---|
+| `moonshot_trackerv1` | Heltec Wireless Tracker V1.1 | COM13 — primary flight unit |
+| `moonshot_lora32v43` | Heltec WiFi LoRa 32 V4.3 | COM19 — bench only, no carrier board |
+| `moonbase_trackerv1` | Heltec Wireless Tracker V1.1 | COM9 |
+| `moonbase_lora32v43` | Heltec WiFi LoRa 32 V4.3 | COM9 — primary base station |
+| `moonbase_lora32v41` | Heltec WiFi LoRa 32 V4.1/V4.2 | COM9 |
+
+**Gen 2 boards (LoRa32 V4.x, Tracker V2) have an external FEM.** Two consequences:
+
+- **V4.1/V4.2 and V4.3 are not interchangeable.** The FEM part changed
+  (GC1109 → KCT8103L) and the control lines moved: on V4.1 the SX1262's DIO2
+  drives CTX and GPIO46 drives CPS; on V4.3 DIO2 drives CPS and **GPIO5** drives
+  CTX. Building V4.1 firmware for a V4.3 board leaves CTX low and no transmit
+  power reaches the antenna.
+- **SX1262 output must stay at or below 0 dBm on FEM boards.** The GC1109
+  absolute maximum input is +5 dBm (datasheet Table 1) and the SX1262 RFO
+  reaches the FEM through a matching network with no attenuator. The FEM's
+  ~30 dB gain is what produces Heltec's quoted 28 dBm. `-9..+22` is only safe
+  on gen-1 boards. Never key a FEM board without an antenna — the ANT port
+  maximum is +10 dBm and a reflected transmit burst destroys the LNA.
 
 ### Rocket firmware modules (`rocket_avionics/`)
 

@@ -11,17 +11,25 @@ static inline void ledOnTX() { ledcWrite(LED_PIN, 64); }
 static inline void ledOnRX() { ledcWrite(LED_PIN, 5); }
 static inline void ledOff()  { ledcWrite(LED_PIN, 0); }
 
-// ===================== FEM CONTROL (LoRa32 V4 only) =====================
-// The V4 has an external FEM. EN and CTL are held high permanently after init;
-// PA pin is HIGH during TX, LOW during RX. Pin assignments in board_config.h.
-#ifdef BOARD_LORA32_V4
+// ===================== FEM CONTROL (boards with an external front-end) =====================
+// Supply (VFEM_Ctrl) comes up first, then the FEM logic pins — the datasheet
+// requires supply before control. After that the enable line is held HIGH
+// permanently and only LORA_FEM_TX_PIN moves: HIGH during TX, LOW during RX.
+// Which physical FEM line that is differs per revision (CPS on V4.1, CTX on
+// V4.3) — board_config.h resolves it. The other line sits on the SX1262's
+// DIO2 and is driven by the radio itself via setDio2AsRfSwitch().
+//
+// femInitPins() runs once from radioInit() during setup(), so the settle delay
+// is not on any flight path. femTX()/femRX() are single GPIO writes.
+#ifdef BOARD_HAS_FEM
 static inline void femInitPins() {
-  pinMode(LORA_FEM_EN_PIN,  OUTPUT); digitalWrite(LORA_FEM_EN_PIN,  HIGH);
   pinMode(LORA_FEM_CTL_PIN, OUTPUT); digitalWrite(LORA_FEM_CTL_PIN, HIGH);
-  pinMode(LORA_FEM_PA_PIN,  OUTPUT); digitalWrite(LORA_FEM_PA_PIN,  LOW);
+  delayMicroseconds(LORA_FEM_SUPPLY_SETTLE_US);
+  pinMode(LORA_FEM_EN_PIN,  OUTPUT); digitalWrite(LORA_FEM_EN_PIN,  HIGH);
+  pinMode(LORA_FEM_TX_PIN,  OUTPUT); digitalWrite(LORA_FEM_TX_PIN,  LOW);
 }
-static inline void femTX() { digitalWrite(LORA_FEM_PA_PIN, HIGH); }
-static inline void femRX() { digitalWrite(LORA_FEM_PA_PIN, LOW);  }
+static inline void femTX() { digitalWrite(LORA_FEM_TX_PIN, HIGH); }
+static inline void femRX() { digitalWrite(LORA_FEM_TX_PIN, LOW);  }
 #else
 static inline void femInitPins() {}
 static inline void femTX()      {}
