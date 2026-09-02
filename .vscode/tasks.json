@@ -2,49 +2,36 @@
     "version": "2.0.0",
     "inputs": [
         {
-            "id": "baseEnv",
+            "id": "anyEnv",
             "type": "pickString",
-            "description": "Base station board",
+            "description": "Which board?",
             "default": "moonbase_lora32v43",
             "options": [
                 "moonbase_lora32v43",
-                "moonbase_lora32v41",
-                "moonbase_trackerv1"
-            ]
-        },
-        {
-            "id": "rocketEnv",
-            "type": "pickString",
-            "description": "Flight unit board",
-            "default": "moonshot_trackerv1",
-            "options": [
                 "moonshot_trackerv1",
+                "moonbase_lora32v41",
+                "moonbase_trackerv1",
                 "moonshot_lora32v43"
             ]
         }
     ],
     "tasks": [
         {
-            "label": "Flash & Monitor Rocket (Tracker V1.1)",
+            "label": "List serial devices",
+            "detail": "pio device list — find which COM port a board enumerated on",
             "type": "shell",
-            "command": "powershell",
-            "args": [
-                "-NoProfile",
-                "-ExecutionPolicy", "Bypass",
-                "-File", "${workspaceFolder}/flash_and_monitor.ps1",
-                "-Env", "moonshot_trackerv1",
-                "-Label", "ROCKET"
-            ],
-            "presentation": { "reveal": "always", "panel": "dedicated", "close": false },
+            "command": "& \"$env:USERPROFILE\\.platformio\\penv\\Scripts\\pio.exe\" device list",
+            "options": { "shell": { "executable": "powershell.exe", "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"] } },
+            "presentation": { "reveal": "always", "panel": "dedicated" },
             "problemMatcher": []
         },
         {
-            "label": "Flash & Monitor Base Station (LoRa32 V4.3)",
+            "label": "Base station: flash + LittleFS + monitor  (LoRa32 V4.3)",
+            "detail": "Compress web assets, upload firmware, upload LittleFS, then monitor",
             "type": "shell",
             "command": "powershell",
             "args": [
-                "-NoProfile",
-                "-ExecutionPolicy", "Bypass",
+                "-NoProfile", "-ExecutionPolicy", "Bypass",
                 "-File", "${workspaceFolder}/flash_and_monitor.ps1",
                 "-Env", "moonbase_lora32v43",
                 "-Label", "BASE STATION",
@@ -54,44 +41,14 @@
             "problemMatcher": []
         },
         {
-            "label": "Flash & Monitor Base Station (Tracker V1.1)",
+            "label": "Rocket: flash + monitor  (Tracker V1.1)",
+            "detail": "Upload flight firmware, then monitor. No filesystem on the rocket.",
             "type": "shell",
             "command": "powershell",
             "args": [
-                "-NoProfile",
-                "-ExecutionPolicy", "Bypass",
+                "-NoProfile", "-ExecutionPolicy", "Bypass",
                 "-File", "${workspaceFolder}/flash_and_monitor.ps1",
-                "-Env", "moonbase_trackerv1",
-                "-Label", "BASE STATION",
-                "-Fs"
-            ],
-            "presentation": { "reveal": "always", "panel": "dedicated", "close": false },
-            "problemMatcher": []
-        },
-        {
-            "label": "Flash & Monitor Base Station (pick board)",
-            "type": "shell",
-            "command": "powershell",
-            "args": [
-                "-NoProfile",
-                "-ExecutionPolicy", "Bypass",
-                "-File", "${workspaceFolder}/flash_and_monitor.ps1",
-                "-Env", "${input:baseEnv}",
-                "-Label", "BASE STATION",
-                "-Fs"
-            ],
-            "presentation": { "reveal": "always", "panel": "dedicated", "close": false },
-            "problemMatcher": []
-        },
-        {
-            "label": "Flash & Monitor Rocket (pick board)",
-            "type": "shell",
-            "command": "powershell",
-            "args": [
-                "-NoProfile",
-                "-ExecutionPolicy", "Bypass",
-                "-File", "${workspaceFolder}/flash_and_monitor.ps1",
-                "-Env", "${input:rocketEnv}",
+                "-Env", "moonshot_trackerv1",
                 "-Label", "ROCKET"
             ],
             "presentation": { "reveal": "always", "panel": "dedicated", "close": false },
@@ -99,14 +56,79 @@
         },
         {
             "label": "Flash & Monitor Both",
-            "detail": "Ctrl+Shift+B — Tracker V1.1 rocket on COM13 + LoRa32 V4.3 base on COM9",
+            "detail": "Ctrl+Shift+B — rocket (Tracker V1.1) + base station (LoRa32 V4.3), in parallel",
             "dependsOn": [
-                "Flash & Monitor Rocket (Tracker V1.1)",
-                "Flash & Monitor Base Station (LoRa32 V4.3)"
+                "Rocket: flash + monitor  (Tracker V1.1)",
+                "Base station: flash + LittleFS + monitor  (LoRa32 V4.3)"
             ],
             "dependsOrder": "parallel",
             "group": { "kind": "build", "isDefault": true },
             "presentation": { "reveal": "silent", "panel": "shared" },
+            "problemMatcher": []
+        },
+        {
+            "label": "Compress web assets only",
+            "detail": "docs/ -> base_station/data/*.gz   (run before a LittleFS upload)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-File", "${workspaceFolder}/base_station/compress_web.ps1"
+            ],
+            "presentation": { "reveal": "always", "panel": "dedicated" },
+            "problemMatcher": []
+        },
+        {
+            "label": "Upload LittleFS only  (pick board)",
+            "detail": "Compress web assets, then uploadfs. Base station environments only.",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-Command",
+                "& '${workspaceFolder}/base_station/compress_web.ps1'; if ($?) { & \"$env:USERPROFILE\\.platformio\\penv\\Scripts\\pio.exe\" run -e ${input:anyEnv} -t uploadfs }"
+            ],
+            "presentation": { "reveal": "always", "panel": "dedicated" },
+            "problemMatcher": []
+        },
+        {
+            "label": "Flash + monitor  (pick board)",
+            "detail": "Any environment. Boards pinned to COM999 will fail with 'port not found'.",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-File", "${workspaceFolder}/flash_and_monitor.ps1",
+                "-Env", "${input:anyEnv}"
+            ],
+            "presentation": { "reveal": "always", "panel": "dedicated", "close": false },
+            "problemMatcher": []
+        },
+        {
+            "label": "Monitor only  (pick board)",
+            "detail": "Serial monitor, no build or upload",
+            "type": "shell",
+            "command": "& \"$env:USERPROFILE\\.platformio\\penv\\Scripts\\pio.exe\" device monitor -e ${input:anyEnv}",
+            "options": { "shell": { "executable": "powershell.exe", "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"] } },
+            "presentation": { "reveal": "always", "panel": "dedicated", "close": false },
+            "problemMatcher": []
+        },
+        {
+            "label": "Build only  (pick board)",
+            "detail": "Compile without touching hardware. Safe with nothing plugged in.",
+            "type": "shell",
+            "command": "& \"$env:USERPROFILE\\.platformio\\penv\\Scripts\\pio.exe\" run -e ${input:anyEnv}",
+            "options": { "shell": { "executable": "powershell.exe", "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"] } },
+            "presentation": { "reveal": "always", "panel": "dedicated" },
+            "problemMatcher": []
+        },
+        {
+            "label": "Build ALL boards  (no hardware needed)",
+            "detail": "Compile every environment — use to check nothing broke",
+            "type": "shell",
+            "command": "& \"$env:USERPROFILE\\.platformio\\penv\\Scripts\\pio.exe\" run",
+            "options": { "shell": { "executable": "powershell.exe", "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"] } },
+            "presentation": { "reveal": "always", "panel": "dedicated" },
             "problemMatcher": []
         }
     ]

@@ -83,12 +83,20 @@ is the single source of truth for pins; firmware tests **capability flags**
   drives CTX and GPIO46 drives CPS; on V4.3 DIO2 drives CPS and **GPIO5** drives
   CTX. Building V4.1 firmware for a V4.3 board leaves CTX low and no transmit
   power reaches the antenna.
-- **SX1262 output must stay at or below 0 dBm on FEM boards.** The GC1109
-  absolute maximum input is +5 dBm (datasheet Table 1) and the SX1262 RFO
-  reaches the FEM through a matching network with no attenuator. The FEM's
-  ~30 dB gain is what produces Heltec's quoted 28 dBm. `-9..+22` is only safe
-  on gen-1 boards. Never key a FEM board without an antenna — the ANT port
-  maximum is +10 dBm and a reflected transmit burst destroys the LNA.
+- **The SX1262's full `-9..+22` dBm range is safe on FEM boards. Do not add a
+  power clamp.** Heltec fits a resistive pi-pad between the SX1262 RFO and the
+  FEM input (V4.3: R9 280R series, R11/R26 59R shunt) giving roughly 17–21 dB
+  of fixed attenuation, so +22 dBm at the chip arrives at the FEM as about
+  +1..+5 dBm — at or under the GC1109's +5 dBm absolute maximum input. Full
+  power is the designed operating point.
+- **The dashboard number is a relative dial, not dBm at the antenna.** Pad plus
+  ~30 dB FEM gain is about +13 dB net at low drive, compressing as the PA
+  saturates: `-9` gives roughly +4 dBm out, `+22` measured 25.6 dBm on Heltec's
+  spectrum analyser. Calibrate later if it matters.
+- **Never key a FEM board without an antenna.** The GC1109 ruggedness spec only
+  guarantees survival to VSWR 10:1; an unterminated port is well beyond that.
+  The Tracker V2 boards were destroyed this way (~60 dB of sensitivity lost;
+  which stage failed was never confirmed).
 
 ### Rocket firmware modules (`rocket_avionics/`)
 

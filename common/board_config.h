@@ -85,10 +85,8 @@
   #define LORA_FEM_EN_PIN       2    // CSD  — held HIGH after init
   #define LORA_FEM_CTL_PIN      7    // VFEM_Ctrl — FEM supply, HIGH after init
   #define LORA_FEM_TX_PIN       46   // CPS  — HIGH during TX, LOW during RX
-  // GC1109 absolute maximum input (datasheet Table 1): +5 dBm at the TX port.
-  // The SX1262 RFO feeds the FEM through a matching network with NO pad, so
-  // SX1262 output == FEM input. Keep SX1262 output at or below 0 dBm.
-  #define BOARD_FEM_MAX_DRIVE_DBM  0
+  // TX power: the SX1262's full -9..+22 dBm range is safe. See the note under
+  // the V4.3 block — the same resistive pad sits ahead of the FEM.
 
 // ===================== HELTEC WIFI LORA 32 V4.3 =====================
 // Same MCU/flash as V4.1. Gen 2. FEM = KCT8103L (upgraded from GC1109).
@@ -130,10 +128,28 @@
   #define LORA_FEM_EN_PIN       2    // CSD  — held HIGH after init
   #define LORA_FEM_CTL_PIN      7    // VFEM_Ctrl — FEM supply, HIGH after init
   #define LORA_FEM_TX_PIN       5    // CTX  — HIGH during TX, LOW during RX
-  // KCT8103L datasheet not on hand. Same topology and same ~30 dB gain to reach
-  // Heltec's quoted 28 dBm, so assume the GC1109's +5 dBm input maximum until
-  // proven otherwise. Keep SX1262 output at or below 0 dBm.
-  #define BOARD_FEM_MAX_DRIVE_DBM  0
+  //
+  // TX POWER: the SX1262's full -9..+22 dBm range is safe on this board.
+  // No firmware clamp is needed or wanted.
+  //
+  // Heltec puts a resistive pi-pad between the SX1262 RFO and the FEM TX input:
+  // R9 280R in series, R11 59R and R26 59R to ground (schematic
+  // HTIT-WB32LAF_V4.3.pdf, SX1262 pin 23 -> KCT8103L pin 1). That is roughly
+  // 17-21 dB of fixed attenuation, and Heltec's own test-result page quotes
+  // "approximately -17 dB". So +22 dBm out of the SX1262 arrives at the FEM as
+  // about +1..+5 dBm, which is at or under the GC1109's +5 dBm absolute maximum
+  // input (PIN_TX_MAX, GC1109 datasheet Table 1). Full power is the DESIGNED
+  // operating point, not an overdrive.
+  //
+  // What you dial is not what comes out. The pad plus ~30 dB of FEM gain is
+  // about +13 dB net at low drive, compressing as the PA saturates:
+  //   SX1262 -9 dBm  -> roughly +4 dBm at the antenna
+  //   SX1262 +22 dBm -> 25.6 dBm measured by Heltec on a spectrum analyser
+  // Treat the dashboard number as a relative dial, not an absolute dBm figure.
+  //
+  // NEVER key any FEM board without an antenna. The GC1109 ruggedness spec
+  // only guarantees survival to VSWR 10:1; an unterminated port is well beyond
+  // that, and the ANT port absolute maximum is +10 dBm (PIN_RX_MAX).
 
 //TODO: add tracker v2 — gen 2, same era as lora32 v4.
 // Has the external FEM, but keeps the onboard UC6580 GNSS and puts everything
