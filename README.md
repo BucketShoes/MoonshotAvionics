@@ -27,6 +27,7 @@ Flying hardware. The firmware in this repo is written for it.
 
 Flying hardware. Custom PCB. Its firmware is not published here yet, and the
 control page link is coming soon.
+Ultra small. 18mm X 26mm, fits in 24mm min diameter
 
 ![Moonshot V2 flight computer](docs/moonshot-v2.jpg)
 
@@ -34,16 +35,18 @@ control page link is coming soon.
 - **3 pyro channels** plus **1 auxiliary high-current channel**.
 - **8 kHz logging** to onboard flash.
 - Parts, as silkscreened on the board:
-  - U1 `LSM6DSV320X` — high-g accelerometer / IMU
+  - U1 `LSM6DSV320X` — 8khz 320g high-g & 16g low g accelerometer & gyro / IMU
   - U2 `MMC5983MA` — magnetometer
-  - U3 `W25Q01JV` — 1 Gbit flash
+  - U3 `W25Q01JV` 1GBit NOR /`W25N02` 2Gbit NAND for high rate
   - U4 `BMP581` — barometer
   - U5 `PCAL6408ABSHP` — I/O expander
   - U6 `NTGD3148NT1G` — pyro FETs
-- Coming soon: air-start and dual-deploy software, and fin-flutter FFT
+- Coming soon: air-start and dual-deploy software, and fin-flutter/resonance FFT
   (Fast Fourier Transform) analysis of the high-rate log data.
 
 ### V2 PCB documents
+
+Kicad files coming soon.
 
 Board plots exported as PDFs (no CAD source files are checked into this repo):
 
@@ -53,7 +56,7 @@ Board plots exported as PDFs (no CAD source files are checked into this repo):
 
 ## Moonshot V3
 
-In development. Two processors, split by job.
+In development. Target 29mm+. Two processors, split by job.
 
 - **STM32H7** — tight real-time code: sensor fusion and active aerodynamic
   control to keep the rocket inside its bounds. Servo fins / TVC (thrust vector
@@ -64,6 +67,7 @@ In development. Two processors, split by job.
 - Same IMU as V2 (`LSM6DSV320X`), with an upgraded magnetometer and barometer.
 - More pyro channels than V2.
 
+## Base station: any Lora flight computer, or depopulated sensors/flash for cheaper.
 ---
 
 ## Repository layout
@@ -84,4 +88,4 @@ for the per-board environments.
 
 This project fires pyrotechnic ejection charges. Arming is required before any
 automatic pyro action, and ground test firing is command-only. Treat it
-accordingly, and follow your local rocketry safety code.
+accordingly, and follow your local rocketry safety code. All traffic is unencrypted, but commands are cryptographically signed to avoid accidental actions.
