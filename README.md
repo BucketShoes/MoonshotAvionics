@@ -14,7 +14,7 @@ update).
 
 ## Moonshot V1
 
-Flying hardware today.
+Flying hardware. The firmware in this repo is written for it.
 
 - Custom firmware for the flight computer, base station and dashboard — all in this repo.
 - Based on the **Heltec Wireless Tracker V1.1** (ESP32-S3 + SX1262 LoRa + GNSS).
@@ -25,7 +25,8 @@ Flying hardware today.
 
 ## Moonshot V2
 
-Custom PCB. Control page link coming soon.
+Flying hardware. Custom PCB. Its firmware is not published here yet, and the
+control page link is coming soon.
 
 ![Moonshot V2 flight computer](docs/moonshot-v2.jpg)
 
@@ -42,13 +43,26 @@ Custom PCB. Control page link coming soon.
 - Coming soon: air-start and dual-deploy software, and fin-flutter FFT
   (Fast Fourier Transform) analysis of the high-rate log data.
 
-### PCB documents
+### V2 PCB documents
 
 Board plots exported as PDFs (no CAD source files are checked into this repo):
 
 - [pcb.pdf](docs/pcb.pdf)
 - [pcb-color.pdf](docs/pcb-color.pdf)
 - [Moonshot B35.pdf](<docs/Moonshot B35.pdf>)
+
+## Moonshot V3
+
+In development. Two processors, split by job.
+
+- **STM32H7** — tight real-time code: sensor fusion and active aerodynamic
+  control to keep the rocket inside its bounds. Servo fins / TVC (thrust vector
+  control), with an airbrake planned.
+- **ESP32-C6** — logging, commands, camera, microphone, and the radio link
+  (LoRa, BLE, and 802.15.4). It snoops the sensor buses so it can log the full
+  sensor data without getting in the H7's way.
+- Same IMU as V2 (`LSM6DSV320X`), with an upgraded magnetometer and barometer.
+- More pyro channels than V2.
 
 ---
 
