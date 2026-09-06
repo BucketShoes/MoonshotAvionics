@@ -89,3 +89,5 @@ for the per-board environments.
 This project fires pyrotechnic ejection charges. Arming is required before any
 automatic pyro action, and ground test firing is command-only. Treat it
 accordingly, and follow your local rocketry safety code. All traffic is unencrypted, but commands are cryptographically signed to avoid accidental actions.
+
+This project is just my work, and for me to use the control page (needs https hosted for BLE). it's public so others can look, but it's really not recommended anyone else uses it. it's buggy and poorly tested. If you want to use it, test it for yourself for your use case, don't blame me if you blow yourself up, or land your model rocket on someone's head. you really shouldn't be using random code on the internet. no guarantees.
