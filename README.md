@@ -1,8 +1,16 @@
 # Moonshot Avionics
 
 Telemetry, GPS tracking and parachute recovery for model rockets, over LoRa.
+THIS IS NOT FULLY TESTED. DO NOT RELY ON THIS FOR SAFETY CRITICAL USAGE (such as pyros, or recovery, like avoiding crashing into someone at 400km/h).
+Claude had its way with this repo, and although guided, it didn't always follow instructions, and I didn't always review everything perfectly.
+V1 is "tested" - it 'landed' 2 feet deep at 400km/h (motor ejection failed - no pyros were attempted... next time i should use pyros, but everyone told me to simplify it. The moral is, don't trust motors)
+V2 has flown as data logging, 8khz. Firmware in another repo. Target is 
+V3 is in design/planning.
 
-**[Open the control page →](https://bucketshoes.github.io/MoonshotAvionics/)**
+Everything below is AI ramblings.
+
+# Control page
+**[Control page →](https://bucketshoes.github.io/MoonshotAvionics/)**
 
 The control page is a browser dashboard that talks to the flight computer either
 over Bluetooth Low Energy (BLE) directly, or over a LoRa link via a base station.
