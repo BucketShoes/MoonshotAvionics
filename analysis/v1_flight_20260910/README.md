@@ -12,14 +12,15 @@ altitude read 263 m, a QNH offset of about 40 m).
 | | |
 |---|---|
 | Apogee | 2019 m AGL, 17.15 s after first motion |
-| Max speed | ~380 m/s (Mach ~1.11), 1.57 s after first motion |
-| Peak acceleration | ~38 g (accelerometer railed at 16.4 g) |
-| Burnout | 2.072 s, ~318 m/s, ~540 m AGL — **motor delivered full impulse** |
+| Max speed | ~380 m/s (Mach ~1.11) for a nominal burn — see caveat below |
+| Peak acceleration | ~38 g inferred (accelerometer railed at 16.4 g; not measured) |
+| Total impulse | ~226 Ns, within about ±20% of nominal. Burn *duration* is not recoverable |
+| Subsonic drag area | 4.5e-4 m² climbing, 6.4e-4 m² descending (Cd 0.50 / 0.70 on the 34 mm body) |
 | Terminal velocity | ~100 m/s, nose-down, ballistic |
 | Drogue fired | T+17.4 s (0.9 s after apogee) — apogee detect worked |
 | Main | never fired; would have triggered at ground level (see below) |
 | Landing | -31.1631022, 149.9317184; 686 m from pad, bearing 151 deg |
-| Log ends | T+43.51 s at 86 m AGL (battery disconnect, not impact) |
+| Log ends | T+43.51 s, 86 m AGL indicated = ~21 m AGL true, ~0.2 s before impact |
 
 ## Method
 
@@ -33,9 +34,25 @@ So the ascent is reconstructed by:
    from 2019 m at 100 m/s terminal takes 26.4 s; measured 26.36 s.
 2. Back-integrating the clean (unsaturated, post-vibration) coast accelerometer
    data from apogee to get a model-free velocity and altitude at T+3.5 s.
-3. Fitting a drag area to the published H135W thrust curve so the forward
+3. Fitting a drag area to a published H135W thrust curve so the forward
    simulation reproduces both. The fitted CdA (4.54e-4 m^2) matches the value
    derived independently from the coast deceleration (4.6e-4 m^2).
+
+### What this does and does not pin down
+
+Apogee altitude, apogee time and the subsonic drag areas are solid. Impulse is
+good to about +/-20%, because the required value trades against the assumed
+transonic drag rise (`tradeoff.py`). **Burn duration is not recoverable at all** --
+the accelerometer is railed or vibration-aliased from ignition to T+2.9 s, which
+covers every candidate burnout. Max speed depends on it: 377 m/s for a nominal
+2.07 s burn, 517 m/s if the motor dumped the same impulse in 0.85 s
+(`fastburn.py`). Apogee time mildly favours the longer burn but does not settle it.
+Logging page 0x0E would have settled it outright.
+
+The ascent/descent drag asymmetry is *required*, not fitted: using the descent
+drag area for the ascent puts apogee 1.6 s early, far outside error. The gyro
+gives the reason -- 3-50 deg/s of pitch/yaw coasting up, 100-340 deg/s coming
+down.
 
 ## Scripts
 
@@ -49,6 +66,10 @@ So the ascent is reconstructed by:
 | `check.py` | Descent ballistics sanity check and GPS geometry |
 | `final2.py` | Full reconstruction, Mach profile, static-port error vs Mach |
 | `roll.py` | Attempt to recover the railed roll rate from transverse accel — **inconclusive, kept as a negative result** |
+| `tradeoff.py` | Impulse vs transonic-drag trade; shows apogee time rules out a symmetric-drag solution |
+| `fastburn.py` | Burn-duration sensitivity, and the airspeed correction on the final logged altitude |
+| `charge.py` | Searches the apogee window for an ejection-charge pressure or shock transient (none found) |
+| `gpsalt.py` | GPS altitude against airspeed-corrected barometric altitude |
 
 Usage: `MOONSHOT_BIN=path/to/moonshot-fetch.bin python3 parse.py`, then
 `python3 series.py` to produce `flight.csv`, then the rest read that CSV.
@@ -70,6 +91,13 @@ Usage: `MOONSHOT_BIN=path/to/moonshot-fetch.bin python3 parse.py`, then
    during the transonic excursion (1754 m/s).
 5. **Gyro and transverse accel are aliased.** Roll railed the ITG3200
    (>=2280 deg/s) and the 1 Hz gyro / 10 Hz accel log rates cannot recover it.
-6. **Nothing forces a log record on a pyro event** — `freshMask` is set but
+6. **Page 0x0E is silently dropped.** `flight.cpp:257` sets `thrustLogForce` on
+   coast entry and `nonblockingLogging()` honours it, but `dispatchBuildPage()`
+   has **no `case 0x0E`**, so `logPage()` builds zero bytes and writes nothing --
+   and the force flag is consumed either way, so it never retries. Zero 0x0E
+   records exist in 340,000. Note that simply adding the case would smash the
+   stack: `logPage()` uses `uint8_t buf[32]` and a 230-sample page needs ~237
+   bytes.
+7. **Nothing forces a log record on a pyro event** — `freshMask` is set but
    `nonblockingLogging()` is purely interval-driven (existing TODO). Fires are
    only caught by the 10 Hz telemetry header's fired bits.

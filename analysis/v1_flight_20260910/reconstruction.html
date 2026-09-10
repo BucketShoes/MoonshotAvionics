@@ -75,9 +75,9 @@ footer{color:var(--ink-3);font-size:12.5px;border-top:1px solid var(--rule);padd
 
 <dl class="figs">
   <div class="fig"><dt>Apogee</dt><dd>2019<span> m AGL</span><span class="note">baro at zero airspeed; confirmed by fall time</span></dd></div>
-  <div class="fig"><dt>Max speed</dt><dd>379<span> m/s</span><span class="note">Mach 1.11, at T+1.6 s</span></dd></div>
-  <div class="fig"><dt>Peak accel</dt><dd>~38<span> g</span><span class="note">IMU railed at 16.4 g — this is from the thrust curve</span></dd></div>
-  <div class="fig"><dt>Burnout</dt><dd>2.07<span> s</span><span class="note">full impulse; motor was not short</span></dd></div>
+  <div class="fig"><dt>Max speed</dt><dd>~380<span> m/s</span><span class="note">Mach 1.11 for a nominal burn; up to Mach 1.5 if the motor burned short — the log cannot tell</span></dd></div>
+  <div class="fig"><dt>Peak accel</dt><dd>~38<span> g</span><span class="note">IMU railed at 16.4 g; inferred from a nominal curve, not measured</span></dd></div>
+  <div class="fig"><dt>Impulse</dt><dd>226<span> Ns</span><span class="note">99% of nominal, ±20%; burn duration is not resolvable</span></dd></div>
   <div class="fig"><dt>Terminal</dt><dd>100<span> m/s</span><span class="note">nose-down, ballistic, no chute</span></dd></div>
   <div class="fig"><dt>Worst baro error</dt><dd>+1181<span> m</span><span class="note">at Mach 0.88, just below the crossing</span></dd></div>
 </dl>
@@ -145,7 +145,14 @@ footer{color:var(--ink-3);font-size:12.5px;border-top:1px solid var(--rule);padd
     <li><b>Boost</b><span>Rebuilt from the published H135W curve (229&nbsp;Ns over 2.072&nbsp;s) and the
       432&nbsp;g / 350&nbsp;g masses, with drag area fitted to that anchor. The fitted value,
       4.54&times;10<sup>-4</sup>&nbsp;m², matches the <strong>4.6&times;10<sup>-4</sup>&nbsp;m² derived
-      independently</strong> from the coast deceleration.</span></li>
+      independently</strong> from the coast deceleration. Impulse lands within ±20% of nominal;
+      burn <em>duration</em> is not recoverable, because the accelerometer is railed or aliased
+      from ignition to T+2.9&nbsp;s.</span></li>
+    <li><b>Drag</b><span>Subsonic drag area is measured twice and differs: <strong>4.5&times;10<sup>-4</sup>&nbsp;m²
+      climbing, 6.4&times;10<sup>-4</sup>&nbsp;m² descending</strong> (Cd 0.50 and 0.70 on the 34&nbsp;mm body).
+      The ratio is mass- and model-independent. Assuming no asymmetry forces apogee
+      <strong>1.6&nbsp;s too early</strong>, so the difference is required by the data, not fitted to it.
+      The gyro says why: 3&ndash;50&nbsp;&deg;/s of pitch/yaw on the way up, 100&ndash;340&nbsp;&deg;/s coming down.</span></li>
     <li><b>Heading</b><span>GPS puts the landing 686&nbsp;m from the pad over a 44&nbsp;s flight — about
       16&nbsp;m/s of mean horizontal drift. At 379&nbsp;m/s that is roughly <strong>2° off vertical</strong>,
       so the ascent can be treated as straight up.</span></li>
@@ -251,7 +258,7 @@ const near=(arr,x)=>{let b=null,bd=1e9;for(const p of arr){const d=Math.abs(p[0]
   svg.appendChild(el("line",{x1:px(3.3),x2:px(1.35),y1:py(1765),y2:py(1600),stroke:"var(--s2)","stroke-width":1,opacity:".55"}));
   marker(svg,px(43.5),py(330),"log ends","end","var(--ink-3)");
   marker(svg,px(43.5),py(210),"86 m AGL","end","var(--ink-3)");
-  marker(svg,px(33.7)-8,py(1171)+4,"GPS glitch","end","var(--s3)");
+  marker(svg,px(33.7)-8,py(1171)+4,"first fix after 30 s outage","end","var(--s3)");
   const S=[
    {color:"var(--s1)",inv:(cx)=>0+(cx-L)/(W-L-R)*44,
     at:x=>x<=16.8?near(D.asc,x)&&[x,near(D.asc,x)[1]]:near(D.des,x)&&[x,near(D.des,x)[1]],
