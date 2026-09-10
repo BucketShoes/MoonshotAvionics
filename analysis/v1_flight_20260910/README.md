@@ -15,7 +15,7 @@ altitude read 263 m, a QNH offset of about 40 m).
 | Max speed | ~380 m/s (Mach ~1.11) for a nominal burn — see caveat below |
 | Peak acceleration | ~38 g inferred (accelerometer railed at 16.4 g; not measured) |
 | Total impulse | ~226 Ns, within about ±20% of nominal. Burn *duration* is not recoverable |
-| Subsonic drag area | 4.5e-4 m² climbing, 6.4e-4 m² descending (Cd 0.50 / 0.70 on the 34 mm body) |
+| Subsonic drag | Cd 0.52-0.56 climbing (flat); 0.89 just after apogee decaying to 0.60 by impact |
 | Terminal velocity | ~100 m/s, nose-down, ballistic |
 | Drogue fired | T+17.4 s (0.9 s after apogee) — apogee detect worked |
 | Main | never fired; would have triggered at ground level (see below) |
@@ -50,9 +50,17 @@ covers every candidate burnout. Max speed depends on it: 377 m/s for a nominal
 Logging page 0x0E would have settled it outright.
 
 The ascent/descent drag asymmetry is *required*, not fitted: using the descent
-drag area for the ascent puts apogee 1.6 s early, far outside error. The gyro
-gives the reason -- 3-50 deg/s of pitch/yaw coasting up, 100-340 deg/s coming
-down.
+drag area for the ascent puts apogee 1.6 s early, far outside error.
+
+`descentcd.py` shows what it is. Ascent Cd is flat at 0.52-0.56 across a 3x
+Reynolds range. Descent Cd starts at 0.89 three seconds after apogee and decays
+monotonically to 0.60 by impact, still falling. A decay of that size could in
+principle be a Reynolds trend, but the ascent leg covers a comparable Reynolds
+range with no trend at all, which rules that out. It is the vehicle damping out
+the apogee tumble, and it never finished: the implied coning half-angle is ~10
+degrees just after apogee and still ~4 degrees at impact. The extreme roll is
+why it persists -- gyroscopic coupling makes pitch/yaw precess rather than damp,
+so it converges to a coning limit cycle instead of to zero angle of attack.
 
 ## Scripts
 
@@ -70,9 +78,24 @@ down.
 | `fastburn.py` | Burn-duration sensitivity, and the airspeed correction on the final logged altitude |
 | `charge.py` | Searches the apogee window for an ejection-charge pressure or shock transient (none found) |
 | `gpsalt.py` | GPS altitude against airspeed-corrected barometric altitude |
+| `descentcd.py` | Drag area over the descent vs the ascent coast — shows the coning decay |
+| `landing.py` | Landing-prediction error budget from the GPS track |
 
 Usage: `MOONSHOT_BIN=path/to/moonshot-fetch.bin python3 parse.py`, then
 `python3 series.py` to produce `flight.csv`, then the rest read that CSV.
+
+## Static ports
+
+Four ports evenly spaced (good -- that cancels most of the angle-of-attack term,
+so Cp is close to a pure function of Mach for this airframe and is worth
+calibrating). But they sit only 10-20 mm behind the ogive shoulder, which on a
+34 mm tube is 0.3-0.6 calibres. Common practice is at least 1 calibre and often
+1.5-2.5, because the flow accelerates over the ogive and the suction peak near
+the tangent point takes 1-2 calibres to recover. That placement is the likely
+cause of both symptoms: a large Cp (0.10-0.15, where well-placed ports are
+nearer 0.01-0.05) and the violent Mach sensitivity, since the local overspeed at
+the shoulder reaches sonic before the freestream does and the shock forms right
+where the ports are.
 
 ## Firmware issues this flight exposed
 
