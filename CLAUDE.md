@@ -58,9 +58,24 @@ boring/canonical way:
 rocket_avionics/         ESP32-S3 flight unit firmware (primary focus)
 base_station/            ESP32-S3 base station firmware
 common/                  Shared headers: board_config.h, radio_config.h, log_store.h
-docs/                    Web dashboard (JS/HTML/CSS)
+docs/                    Web dashboard (JS/HTML/CSS), published by GitHub Pages
+  sw.js, manifest.webmanifest, icons/, lib/   PWA: installable + offline
 design documents/        Specifications — see index below
 ```
+
+The dashboard is a PWA. `docs/sw.js` caches it so the `https://` origin — and
+therefore Web Bluetooth, voice callouts and clipboard — keeps working with no
+internet. Consequences worth remembering:
+
+- **Don't reintroduce `?_=Date.now()` cache-busting** in `index.html`. It makes
+  every load a unique URL that no cache can hit. Freshness is the service
+  worker's job; the base station's HTTP routes send `Cache-Control: no-cache`.
+- **New file in `docs/` that the page needs to boot → add it to `PRECACHE` in
+  `sw.js`**, or it will 404 offline.
+- **Chart libraries are vendored in `docs/lib/`**, CDN only as fallback.
+- **The PWA cannot reach the base station.** `ws://`/`http://` to 192.168.4.1
+  is mixed content from an `https://` page. PWA = BLE path, AP-served copy =
+  LoRa/WiFi path.
 
 ## Supported hardware
 
@@ -129,6 +144,7 @@ Pull the relevant doc into the conversation when working in that area.
 | `avionics structure.txt` | Simple vs fancy flight model distinction (pyro uses simple model only) |
 | `JS notes.txt` | Web dashboard: session rebuilding, log history loading, packet decoding |
 | `voice callouts.txt` | Voice announcement logic and abbreviated number formatting |
+| `PWA and offline dashboard.md` | Service worker, caching, offline behaviour, the secure-context/mixed-content split |
 
 ## Key design decisions to preserve
 

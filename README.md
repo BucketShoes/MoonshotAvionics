@@ -18,6 +18,30 @@ It shows live telemetry, plots the flight, downloads flash logs, and sends
 authenticated commands (arm, disarm, ground test fire, radio config, firmware
 update).
 
+### Install it (offline use)
+
+The control page is a **PWA** — open it once with internet and your browser
+offers "Install" / "Add to Home Screen". After that it launches and runs with no
+internet at all, which matters because Web Bluetooth, voice callouts and
+clipboard access only work in a secure context: the copy served from the base
+station's own WiFi AP is plain HTTP, so those features are unavailable there.
+
+The install caches the page, the chart libraries and the icons, so charts work
+offline too. The two link paths split like this:
+
+| | Installed PWA (`https://`) | Served from the base station AP (`http://192.168.4.1`) |
+|---|---|---|
+| Web Bluetooth to the rocket | yes | no — needs a secure context |
+| Voice callouts, clipboard | yes | no — same reason |
+| WebSocket / HTTP to the base station | no — blocked as mixed content | yes |
+
+So the PWA is the BLE tool and the AP copy is the LoRa/WiFi tool, until the base
+station serves HTTPS. See `design documents/PWA and offline dashboard.md`.
+
+Updates are automatic: launch it once with internet after a new version is
+pushed and it offers a one-tap reload. If a cached build ever misbehaves in the
+field, load `…/?nosw` to wipe the offline copy and unregister the worker.
+
 ---
 
 ## Moonshot V1
@@ -85,7 +109,7 @@ In development. Target 29mm+. Two processors, split by job.
 | `rocket_avionics/` | Flight computer firmware (ESP32-S3) |
 | `base_station/` | Base station firmware |
 | `common/` | Shared headers: board pinouts, radio config, log format |
-| `docs/` | The control page (published by GitHub Pages) and PCB PDFs |
+| `docs/` | The control page (published by GitHub Pages as an installable PWA) and PCB PDFs |
 | `design documents/` | Protocol, flight phase, log format and dashboard specs |
 | `boards/` | PlatformIO board definitions |
 

@@ -64,3 +64,10 @@
   .mask-grid{display:flex;gap:4px;flex-wrap:wrap;margin-top:2px}
   .mask-grid label{font-size:10px;color:#aaa;display:flex;align-items:center;gap:2px}
   @media(max-width:600px){.charts{grid-template-columns:1fr}.grid{grid-template-columns:1fr 1fr}}
+
+  /* PWA update prompt — shown by the service-worker registration in index.html
+     when a newer build of the dashboard has been fetched in the background. */
+  .pwa-toast { display:none; position:fixed; left:50%; bottom:12px; transform:translateX(-50%); z-index:2000;
+    background:#234; color:#4af; border:1px solid #456; border-radius:4px; padding:6px 14px;
+    font-family:'Courier New',monospace; font-size:12px; cursor:pointer; box-shadow:0 2px 8px #000a; }
+  .pwa-toast:hover { background:#2a4055; }

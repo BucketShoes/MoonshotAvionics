@@ -4,9 +4,23 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Rocket Base Station</title>
-<script>
-document.write('<link rel="stylesheet" href="style.css?_='+Date.now()+'">');
-</script>
+
+<!-- PWA: installable, and cached so Web Bluetooth / speech / clipboard keep
+     working out at a launch site with no internet. See sw.js. The old
+     ?_=Date.now() cache-buster on style.css and app.js was removed because it
+     made every load a unique URL, which no cache (service worker or browser)
+     can ever hit; freshness is now the service worker's job. -->
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0e0e0e">
+<meta name="description" content="Telemetry dashboard for the Moonshot model rocket avionics and base station.">
+<link rel="icon" href="icons/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Moonshot">
+<meta name="mobile-web-app-capable" content="yes">
+
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
 
@@ -447,6 +461,96 @@ document.write('<link rel="stylesheet" href="style.css?_='+Date.now()+'">');
 </script>
 
 <script src="ble_adapter.js"></script>
-<script>document.write('<script src="app.js?_='+Date.now()+'"><\/script>');</script>
+<script src="app.js"></script>
+
+<!-- Service worker registration. Deliberately last and fully guarded: on the
+     copy served from the base station's AP (plain http://192.168.4.1) there is
+     no navigator.serviceWorker at all, and the dashboard must still boot. -->
+<script>
+(function(){
+  if (!('serviceWorker' in navigator)) return;
+  if (location.protocol === 'file:') return;
+
+  // Field recovery hatch: loading .../?nosw wipes the offline copy and
+  // unregisters the worker. Needed because a bad cached build would otherwise
+  // survive every reload, and at a launch site there is no dev-tools escape.
+  if (/[?&]nosw\b/.test(location.search)) {
+    navigator.serviceWorker.getRegistrations().then(function(rs){
+      return Promise.all(rs.map(function(r){ return r.unregister(); }));
+    }).then(function(){
+      return caches.keys().then(function(ks){
+        return Promise.all(ks.map(function(k){ return caches.delete(k); }));
+      });
+    }).then(function(){
+      document.title = 'offline copy cleared';
+      alert('Offline copy cleared. Reload without ?nosw to reinstall.');
+    });
+    return;
+  }
+
+  function toast(msg, onClick){
+    var t = document.getElementById('pwa-toast');
+    if (!t) {
+      t = document.createElement('div');
+      t.id = 'pwa-toast';
+      t.className = 'pwa-toast';
+      document.body.appendChild(t);
+    }
+    t.textContent = msg;
+    t.onclick = onClick || function(){ t.remove(); };
+    t.style.display = 'block';
+  }
+
+  // Listeners go on immediately, not on load: a background revalidate can
+  // finish before the page is done parsing, and its message would be lost.
+  var reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', function(){
+    if (reloading) return;
+    reloading = true;
+    location.reload();
+  });
+
+  // Sent by sw.js when a background revalidate finds changed bytes but the
+  // service worker itself is unchanged (i.e. you edited app.js or style.css).
+  navigator.serviceWorker.addEventListener('message', function(ev){
+    if (ev.data && ev.data.type === 'asset-updated') {
+      toast('Dashboard files updated \u2014 tap to reload', function(){
+        location.reload();
+      });
+    }
+  });
+
+  window.addEventListener('load', function(){
+    navigator.serviceWorker.register('sw.js').then(function(reg){
+      // A waiting worker means a new build is already downloaded.
+      function offerUpdate(worker){
+        toast('New dashboard version ready \u2014 tap to reload', function(){
+          worker.postMessage('skip-waiting');
+        });
+      }
+      if (reg.waiting) offerUpdate(reg.waiting);
+      reg.addEventListener('updatefound', function(){
+        var w = reg.installing;
+        if (!w) return;
+        w.addEventListener('statechange', function(){
+          // controller present => this is an update, not the first install.
+          if (w.state === 'installed' && navigator.serviceWorker.controller) offerUpdate(w);
+        });
+      });
+      // Check for a new build on launch; harmless and silent when offline.
+      reg.update().catch(function(){});
+    }).catch(function(err){
+      console.warn('[pwa] service worker registration failed:', err);
+    });
+
+    // Ask for anything the worker noticed before this page could listen.
+    navigator.serviceWorker.ready.then(function(){
+      if (navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage('check-updates');
+      }
+    });
+  });
+})();
+</script>
 </body>
 </html>

@@ -1774,15 +1774,34 @@ function initCharts() {
     }
   }
 
-  // NOTE: This WiFi AP has no internet. CDN scripts only work if the browser
-  // has them cached from a previous session on a different network. Always
-  // provide a fallback and a manual "load from cache" button.
-  var CDN_URLS = [
-    'https://cdn.jsdelivr.net/npm/chart.js@4',
-    'https://cdn.jsdelivr.net/npm/hammerjs@2',
-    'https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2'
+  // Chart stack. The copies in lib/ are the primary source: they are what makes
+  // charts work in the installed PWA with no internet (sw.js precaches them).
+  // The jsDelivr URLs stay as a per-file fallback for the copy of this page
+  // served from the base station's LittleFS, which does not carry lib/ —
+  // there they only succeed if the browser already has them cached.
+  var CHART_LIBS = [
+    { local: 'lib/chart.umd.min.js',           cdn: 'https://cdn.jsdelivr.net/npm/chart.js@4' },
+    { local: 'lib/hammer.min.js',              cdn: 'https://cdn.jsdelivr.net/npm/hammerjs@2' },
+    { local: 'lib/chartjs-plugin-zoom.min.js', cdn: 'https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2' }
   ];
-  var cdnLoaded = 0, cdnTotal = CDN_URLS.length;
+  var chartLibTotal = CHART_LIBS.length;
+
+  // Load one script, preferring the local copy and falling back to the CDN.
+  function loadScriptWithFallback(entry, onDone, onFail) {
+    function attempt(src, isFallback) {
+      var s = document.createElement('script');
+      s.src = src;
+      s.onload = onDone;
+      s.onerror = function() {
+        s.remove();
+        if (isFallback) { onFail(); return; }
+        console.warn('[charts] local copy missing, trying CDN:', entry.local);
+        attempt(entry.cdn, true);
+      };
+      document.head.appendChild(s);
+    }
+    attempt(entry.local, false);
+  }
 
   function loadCDN() {
     var btn = document.getElementById('btn-cdn');
@@ -1792,11 +1811,11 @@ function initCharts() {
       btn.textContent = 'Charts OK';
       return;
     }
-    cdnLoaded = 0;
-    btn.textContent = 'Loading 0/' + cdnTotal + '...';
+    var loaded = 0;
+    btn.textContent = 'Loading 0/' + chartLibTotal + '...';
 
     function loadNext(i) {
-      if (i >= CDN_URLS.length) {
+      if (i >= CHART_LIBS.length) {
         if (typeof Chart !== 'undefined') {
           initCharts();
           rebuildChartsWithZoom();
@@ -1806,17 +1825,13 @@ function initCharts() {
         }
         return;
       }
-      var s = document.createElement('script');
-      s.src = CDN_URLS[i];
-      s.onload = function() {
-        cdnLoaded++;
-        btn.textContent = 'Loading ' + cdnLoaded + '/' + cdnTotal + '...';
+      loadScriptWithFallback(CHART_LIBS[i], function() {
+        loaded++;
+        btn.textContent = 'Loading ' + loaded + '/' + chartLibTotal + '...';
         loadNext(i + 1);
-      };
-      s.onerror = function() {
-        btn.textContent = 'CDN fail (' + (i + 1) + '/' + cdnTotal + ') retry';
-      };
-      document.head.appendChild(s);
+      }, function() {
+        btn.textContent = 'Chart lib fail (' + (i + 1) + '/' + chartLibTotal + ') retry';
+      });
     }
     loadNext(0);
   }

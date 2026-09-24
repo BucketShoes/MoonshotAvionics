@@ -1263,18 +1263,24 @@ void setup() {
     AsyncWebServerResponse *resp = r->beginResponse(LittleFS, "/index.html.gz", "text/html");
     if (!resp) { r->send(503, "text/plain", "LittleFS not mounted"); return; }
     resp->addHeader("Content-Encoding", "gzip");
+    // docs/index.html no longer cache-busts its own asset URLs (the PWA
+    // service worker handles freshness on the GitHub Pages copy), so tell the
+    // browser to revalidate or a re-flashed LittleFS would serve stale JS.
+    resp->addHeader("Cache-Control", "no-cache");
     r->send(resp);
   });
   httpServer.on("/style.css", HTTP_GET, [](AsyncWebServerRequest *r){
     AsyncWebServerResponse *resp = r->beginResponse(LittleFS, "/style.css.gz", "text/css");
     if (!resp) { r->send(503, "text/plain", "LittleFS not mounted"); return; }
     resp->addHeader("Content-Encoding", "gzip");
+    resp->addHeader("Cache-Control", "no-cache");
     r->send(resp);
   });
   httpServer.on("/app.js", HTTP_GET, [](AsyncWebServerRequest *r){
     AsyncWebServerResponse *resp = r->beginResponse(LittleFS, "/app.js.gz", "application/javascript");
     if (!resp) { r->send(503, "text/plain", "LittleFS not mounted"); return; }
     resp->addHeader("Content-Encoding", "gzip");
+    resp->addHeader("Cache-Control", "no-cache");
     r->send(resp);
   });
   httpServer.on("/api/status", HTTP_GET, handleApiStatus);
