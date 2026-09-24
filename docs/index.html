@@ -471,20 +471,49 @@
   if (!('serviceWorker' in navigator)) return;
   if (location.protocol === 'file:') return;
 
-  // Field recovery hatch: loading .../?nosw wipes the offline copy and
-  // unregisters the worker. Needed because a bad cached build would otherwise
+  // Everything below is scoped to THIS app's directory. bucketshoes.github.io
+  // also hosts EspRangeTest with its own service worker, and caches and
+  // registrations are origin-wide — so no blanket "unregister everything" or
+  // "delete every cache" here, or recovering one app would break the other.
+  var SCOPE = new URL('./', location.href).href;
+  var CACHE_PREFIX = 'moonshot-';
+
+  // Field recovery hatch: loading .../?nosw wipes this app's offline copy and
+  // unregisters its worker. Needed because a bad cached build would otherwise
   // survive every reload, and at a launch site there is no dev-tools escape.
   if (/[?&]nosw\b/.test(location.search)) {
-    navigator.serviceWorker.getRegistrations().then(function(rs){
-      return Promise.all(rs.map(function(r){ return r.unregister(); }));
-    }).then(function(){
-      return caches.keys().then(function(ks){
-        return Promise.all(ks.map(function(k){ return caches.delete(k); }));
+    // The worker deletes its own caches, then we unregister it. Doing it the
+    // other way round loses the race: this very navigation kicked off a
+    // background revalidate, and its cache.put() lands after the delete and
+    // quietly recreates the cache.
+    var finished = false;
+    function finish(){
+      if (finished) return;
+      finished = true;
+      navigator.serviceWorker.getRegistrations().then(function(rs){
+        return Promise.all(rs.filter(function(r){ return r.scope === SCOPE; })
+                             .map(function(r){ return r.unregister(); }));
+      }).then(function(){
+        // Belt and braces, and the whole job when no worker answered.
+        return caches.keys().then(function(ks){
+          return Promise.all(ks.filter(function(k){ return k.indexOf(CACHE_PREFIX) === 0; })
+                               .map(function(k){ return caches.delete(k); }));
+        });
+      }).then(function(){
+        document.title = 'offline copy cleared';
+        alert('Offline copy cleared. Reload without ?nosw to reinstall.');
       });
-    }).then(function(){
-      document.title = 'offline copy cleared';
-      alert('Offline copy cleared. Reload without ?nosw to reinstall.');
-    });
+    }
+
+    if (navigator.serviceWorker.controller) {
+      navigator.serviceWorker.addEventListener('message', function(ev){
+        if (ev.data && ev.data.type === 'purged') finish();
+      });
+      navigator.serviceWorker.controller.postMessage('purge');
+      setTimeout(finish, 3000);   // worker wedged or gone: clear up anyway
+    } else {
+      finish();
+    }
     return;
   }
 

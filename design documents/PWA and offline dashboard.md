@@ -74,11 +74,39 @@ Three details that are load-bearing:
 stale-while-revalidate picks those up. Bump it only to force-evict every
 client, e.g. after removing a precached file.
 
+## Sharing an origin with EspRangeTest
+
+`bucketshoes.github.io` also hosts the EspRangeTest phone UI, under
+`/EspRangeTest/`, with its own service worker. Worker **scopes** are
+per-directory so the two never handle each other's requests, but two things are
+origin-wide and have to be namespaced by hand:
+
+- **The cache store.** This app's caches are prefixed `moonshot-`
+  (`CACHE_PREFIX` in `sw.js`), and both the activate cleanup and the purge below
+  only ever delete caches carrying that prefix.
+- **`navigator.serviceWorker.getRegistrations()`**, which returns *every*
+  registration on the origin. The recovery hatch filters by scope before
+  unregistering anything.
+
+Get either wrong and resetting one app silently destroys the other's offline
+copy — which you would only find out the next time you were somewhere with no
+internet.
+
+`localStorage` is origin-wide too, but the keys do not collide: this app uses
+`base-url` and `cmd-nonce`, EspRangeTest uses `esprt.*`.
+
 ## Recovery
 
-Loading `…/?nosw` unregisters the worker and deletes every cache, then tells you
-to reload. This exists because a bad cached build would otherwise survive every
-reload, and there is no dev-tools escape on a phone at a launch site.
+Loading `…/?nosw` clears this app's offline copy and unregisters its worker.
+This exists because a bad cached build would otherwise survive every reload, and
+there is no dev-tools escape on a phone at a launch site.
+
+The order matters. The page asks the worker to purge **first** and only
+unregisters once the worker confirms, because the navigation that loaded `?nosw`
+also kicked off a background revalidate — and its `cache.put()` landing after a
+delete would quietly recreate the cache. The worker sets a `purging` flag that
+stops it writing and stops it intercepting, deletes its own caches, then
+replies. A three-second timeout covers a wedged or already-dead worker.
 
 ## Gotchas
 

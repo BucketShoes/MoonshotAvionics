@@ -76,6 +76,10 @@ internet. Consequences worth remembering:
 - **The PWA cannot reach the base station.** `ws://`/`http://` to 192.168.4.1
   is mixed content from an `https://` page. PWA = BLE path, AP-served copy =
   LoRa/WiFi path.
+- **`bucketshoes.github.io` also hosts EspRangeTest**, which has its own service
+  worker. Caches, service-worker registrations and `localStorage` are
+  origin-wide, so anything this app deletes must be filtered by the
+  `moonshot-` cache prefix or by scope — never "delete every cache".
 
 ## Supported hardware
 

@@ -27,8 +27,12 @@
  * only to force-evict every client, e.g. after removing a precached file.
  */
 
+// bucketshoes.github.io also hosts EspRangeTest, with its own worker. Caches
+// are origin-wide, so this app namespaces its own and only ever deletes caches
+// carrying this prefix.
+var CACHE_PREFIX  = 'moonshot-';
 var CACHE_VERSION = 'v1';
-var CACHE_NAME = 'moonshot-' + CACHE_VERSION;
+var CACHE_NAME    = CACHE_PREFIX + CACHE_VERSION;
 
 // Everything required to boot with zero network. Relative to this file, so the
 // whole app can move to a different path (or a different domain) untouched.
@@ -76,7 +80,7 @@ self.addEventListener('activate', function(ev) {
   ev.waitUntil(
     caches.keys().then(function(names) {
       return Promise.all(names.map(function(n) {
-        if (n !== CACHE_NAME && n.indexOf('moonshot-') === 0) return caches.delete(n);
+        if (n !== CACHE_NAME && n.indexOf(CACHE_PREFIX) === 0) return caches.delete(n);
       }));
     }).then(function() {
       return self.clients.claim();
@@ -91,6 +95,11 @@ self.addEventListener('activate', function(ev) {
 // navigation, since by then the page is loading the refreshed files.
 var pendingUpdates = [];
 
+// Set by a 'purge' message. Once purging, this worker must not write to the
+// cache again: the page is about to delete it, and an in-flight revalidate
+// landing its cache.put() afterwards would silently recreate it.
+var purging = false;
+
 // The files worth explicitly re-checking on every launch. A reload does not
 // reliably route subresources through this worker — Chrome can satisfy them
 // from the renderer's memory cache — so relying on passive revalidation alone
@@ -101,6 +110,21 @@ var WATCH = ['index.html', 'style.css', 'app.js', 'ble_adapter.js'];
 self.addEventListener('message', function(ev) {
   // Sent after the user accepts the update prompt.
   if (ev.data === 'skip-waiting') { self.skipWaiting(); return; }
+
+  // Sent by the ?nosw recovery hatch. The worker deletes its own caches,
+  // because only it knows when its own writes have stopped. Scoped to this
+  // app's prefix — the other app on this origin keeps its offline copy.
+  if (ev.data === 'purge') {
+    purging = true;
+    ev.waitUntil(caches.keys().then(function(names) {
+      return Promise.all(names.filter(function(n) {
+        return n.indexOf(CACHE_PREFIX) === 0;
+      }).map(function(n) { return caches.delete(n); }));
+    }).then(function() {
+      if (ev.source) ev.source.postMessage({ type: 'purged' });
+    }));
+    return;
+  }
 
   if (ev.data === 'check-updates') {
     // Anything a background revalidate already spotted before the page was
@@ -147,8 +171,9 @@ function stamp(res) {
 function revalidate(cache, url, cached) {
   // no-cache forces a conditional request, so an edit deployed minutes ago is
   // not hidden behind GitHub Pages' max-age.
+  if (purging) return Promise.resolve(null);
   return fetch(new Request(url, { cache: 'no-cache' })).then(function(res) {
-    if (!res || !res.ok) return null;
+    if (!res || !res.ok || purging) return null;
     var before = stamp(cached), after = stamp(res);
     return cache.put(url, res.clone()).then(function() {
       if (cached && before && after && before !== after) {
@@ -190,6 +215,11 @@ function staleWhileRevalidate(ev, url) {
 self.addEventListener('fetch', function(ev) {
   var req = ev.request;
   if (req.method !== 'GET') return;
+
+  // Mid-purge the cache is being torn down, so stop intercepting and let
+  // requests go straight to the network rather than answering 504 from a
+  // cache that no longer exists.
+  if (purging) return;
 
   var url;
   try { url = new URL(req.url); } catch (e) { return; }
