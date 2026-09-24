@@ -25,6 +25,36 @@
     return 'ws://' + getBaseHost() + ':80/ws';
   }
 
+  // The base station speaks plain http/ws — there is no TLS on the ESP32. From
+  // an https:// page, which is what the cached/installed dashboard always is,
+  // every one of those requests is ACTIVE MIXED CONTENT. Chrome blocks it, so
+  // the request was never going to work; worse, it flags the whole page "Not
+  // secure", and a page in that state cannot be installed as an app. A status
+  // poll on a timer therefore re-poisons the page every 30 seconds, for good.
+  // So: don't make the request at all. BLE is unaffected and still works.
+  //
+  // localhost is exempt — browsers treat it as a secure origin, so serving the
+  // dashboard from `python3 -m http.server` against a local bridge is fine.
+  function wifiPathBlocked() {
+    if (location.protocol !== 'https:') return false;
+    var h = getBaseHost().replace(/^\[|\]$/g, '').split(':')[0];
+    return !(h === 'localhost' || h === '127.0.0.1' || h === '::1' ||
+             /\.localhost$/.test(h));
+  }
+
+  var wifiBlockedNoted = false;
+  function noteWifiBlocked() {
+    setWs(false);
+    var el = document.getElementById('val-ws');
+    if (el) el.textContent = 'n/a on https';
+    if (wifiBlockedNoted) return;
+    wifiBlockedNoted = true;
+    console.warn('[wifi] WiFi/WebSocket path disabled: this page is https and the ' +
+                 'base station is plain http, which the browser blocks as mixed ' +
+                 'content. Use BLE here, or open the copy served by the base ' +
+                 'station AP for the WiFi path.');
+  }
+
   // =============================================================
   // Pure JS SHA-256 (no crypto.subtle needed - works over HTTP)
   // =============================================================
@@ -595,6 +625,7 @@ function initCharts() {
       return;
     }
     // HTTP path (WiFi)
+    if (wifiPathBlocked()) { noteWifiBlocked(); if (cb) cb(null); return; }
     var x=new XMLHttpRequest();x.open('GET',getBaseHttp()+'/api/status');x.onload=function(){if(x.status===200){try{var s=JSON.parse(x.responseText);serverUptimeMs=s.uptimeMs;serverSyncClockMs=Date.now();document.getElementById('val-logrec').textContent=s.records;if(typeof s.baseBattMv==='number'){var be=document.getElementById('val-basebatt');be.textContent=s.baseBattMv+'mV';be.style.color=s.baseBattMv>3500?'#0f0':s.baseBattMv>3300?'#ff0':'#f44';if(charts&&charts.batt){var bootMs=serverUptimeMs;pushChart(charts.batt,bootMs,[null,s.baseBattMv])}}updateNonceFromStatus(s);if(cb)cb(s)}catch(e){}}};x.send()
   }
 
@@ -1020,6 +1051,7 @@ function initCharts() {
         if(fetchAbort||cursor<=oldest){done();return;}
         var start=Math.max(cursor-200,oldest),count=cursor-start;
         if(start>=fetchedLowest&&cursor<=fetchedHighest){cursor=start;if(cursor>oldest)page();else done();return;}
+        if(wifiPathBlocked()){noteWifiBlocked();document.getElementById('fst').textContent='WiFi fetch needs the base-station page (https blocks plain http)';done();return}
         document.getElementById('fst').textContent='#'+start+'..'+(start+count-1)+'…';
         var x=new XMLHttpRequest();
         x.open('GET',getBaseHttp()+'/api/logs?start='+start+'&count='+count);
@@ -1060,7 +1092,7 @@ function initCharts() {
   }
 
   var wsObj = null;
-  function connectWS(){try{wsObj=new WebSocket(getBaseWs());wsObj.binaryType='arraybuffer'}catch(e){setWs(false);return}wsObj.onopen=function(){setWs(true);fetchStatus()};wsObj.onclose=function(){setWs(false)};wsObj.onmessage=function(ev){if(!(ev.data instanceof ArrayBuffer)||ev.data.byteLength<13)return;var dv=new DataView(ev.data);var pktBuf=ev.data.slice(12);var snr=dv.getFloat32(0,true);var rssi=dv.getFloat32(4,true);var recNum=dv.getInt32(8,true);var firstByte=new Uint8Array(pktBuf)[0];if(firstByte===0xCA){onLogChunk(pktBuf,snr,rssi,recNum)}else{onLivePkt(pktBuf,snr,rssi,recNum)}};wsObj.onerror=function(){wsObj.close()}}
+  function connectWS(){if(wifiPathBlocked()){noteWifiBlocked();return}try{wsObj=new WebSocket(getBaseWs());wsObj.binaryType='arraybuffer'}catch(e){setWs(false);return}wsObj.onopen=function(){setWs(true);fetchStatus()};wsObj.onclose=function(){setWs(false)};wsObj.onmessage=function(ev){if(!(ev.data instanceof ArrayBuffer)||ev.data.byteLength<13)return;var dv=new DataView(ev.data);var pktBuf=ev.data.slice(12);var snr=dv.getFloat32(0,true);var rssi=dv.getFloat32(4,true);var recNum=dv.getInt32(8,true);var firstByte=new Uint8Array(pktBuf)[0];if(firstByte===0xCA){onLogChunk(pktBuf,snr,rssi,recNum)}else{onLivePkt(pktBuf,snr,rssi,recNum)}};wsObj.onerror=function(){wsObj.close()}}
 
   // =============================================================
   // BLE TRANSPORT (Web Bluetooth GATT)
@@ -2222,6 +2254,16 @@ function initCharts() {
     var useBaseBle  = (transport === 'baseBle' || (transport === 'auto' && bleConnected)) && bleConnected;
     var useHttp     = !useRktBle && !useBaseBle;
 
+    // Don't fire a request the browser will block anyway — see wifiPathBlocked().
+    if (useHttp && wifiPathBlocked()) {
+      noteWifiBlocked();
+      result.textContent += '\nNot sent: the WiFi path needs the base-station-hosted ' +
+                            'page (this page is https, the base station is plain http). ' +
+                            'Connect BLE to send commands from here.';
+      result.style.color = '#f80';
+      return;
+    }
+
     if (useRktBle) {
       rktBleSendCommand(postBody).then(function(r) {
         result.textContent += '\nRkt BLE: ' + (r.ok ? 'OK' : r.msg);
@@ -2335,6 +2377,13 @@ function initCharts() {
     var useHttp = (target === 'base') && !bleOtaChar_ && !bleConnected;
 
     if (!useHttp && !otaChar) { prog.textContent = 'ERROR: OTA char not available — connect BLE first'; return; }
+    if (useHttp && wifiPathBlocked()) {
+      noteWifiBlocked();
+      prog.textContent = 'ERROR: OTA over WiFi needs the base-station-hosted page ' +
+                         '(this page is https, the base station is plain http). ' +
+                         'Connect BLE to flash from here.';
+      return;
+    }
     if (!useHttp && !cmdChar) { prog.textContent = 'ERROR: command char not available'; return; }
 
     // Recompute HMAC just before sending
@@ -3087,7 +3136,16 @@ function initCharts() {
   window.addEventListener('load', function() {
     initGrid();
     loadCDN();
-    setInterval(function(){ fetchStatus(); }, 30000);
+    // Only poll the base station when the request can actually succeed. See
+    // wifiPathBlocked(): on https this fired every 30s and kept the page
+    // flagged "Not secure" no matter what the user cleared.
+    if (wifiPathBlocked()) {
+      noteWifiBlocked();
+      var wsBtn = document.getElementById('btn-ws-reconnect');
+      if (wsBtn) { wsBtn.disabled = true; wsBtn.title = 'Needs the base-station-hosted page (https blocks plain http)'; }
+    } else {
+      setInterval(function(){ fetchStatus(); }, 30000);
+    }
 
     document.getElementById('btn-cl').addEventListener('click', function() { document.getElementById('log').innerHTML = ''; });
     document.getElementById('btn-cdn').addEventListener('click', loadCDN);

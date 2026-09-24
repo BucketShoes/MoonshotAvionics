@@ -34,6 +34,33 @@ station TLS — a self-signed certificate still trips the interstitial and
 - **PWA** → the BLE tool, works anywhere, no base station needed.
 - **AP copy** → the LoRa/WiFi tool, no BLE and no voice.
 
+### Blocked is worse than useless: `wifiPathBlocked()`
+
+Making the request anyway is not harmless. Chrome blocks it *and* flags the
+whole page "Not secure", and a page in that state **cannot be installed as an
+app**. The status poll used to run on a 30-second timer from `load`, so an
+https page re-flagged itself every 30 seconds forever — clearing site data or
+reinstalling the app could not fix it, because the next tick put it straight
+back. The flag is origin-wide in the omnibox, so it also made the *other* app
+on `bucketshoes.github.io` look broken.
+
+So `app.js` does not make the request. `wifiPathBlocked()` returns true when
+the page is `https:` and the base host is not localhost, and every WiFi path
+checks it first:
+
+| Path | Behaviour when blocked |
+|---|---|
+| 30-second status poll | never armed; WS control disabled, reads `n/a on https` |
+| `connectWS()` | returns without constructing the WebSocket |
+| `fetchStatus()` HTTP branch | returns, calls back with `null` |
+| log fetch over HTTP | stops, explains in the fetch status line |
+| command dispatch | refuses the HTTP transport, tells you to use BLE |
+| OTA over WiFi | same |
+
+`localhost` is exempt because browsers treat it as a secure origin, so serving
+the dashboard from `python3 -m http.server` against a local bridge still works.
+BLE is never affected.
+
 ## Files
 
 | File | Role |

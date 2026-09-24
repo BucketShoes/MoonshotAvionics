@@ -75,7 +75,9 @@ internet. Consequences worth remembering:
 - **Chart libraries are vendored in `docs/lib/`**, CDN only as fallback.
 - **The PWA cannot reach the base station.** `ws://`/`http://` to 192.168.4.1
   is mixed content from an `https://` page. PWA = BLE path, AP-served copy =
-  LoRa/WiFi path.
+  LoRa/WiFi path. **Every WiFi path must check `wifiPathBlocked()` first** —
+  a blocked request still flags the page "Not secure", which makes it
+  un-installable, and a request on a timer re-flags it forever.
 - **`bucketshoes.github.io` also hosts EspRangeTest**, which has its own service
   worker. Caches, service-worker registrations and `localStorage` are
   origin-wide, so anything this app deletes must be filtered by the
