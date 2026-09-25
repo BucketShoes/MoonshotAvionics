@@ -67,7 +67,9 @@
 
   /* PWA update prompt — shown by the service-worker registration in index.html
      when a newer build of the dashboard has been fetched in the background. */
-  .pwa-toast { display:none; position:fixed; left:50%; bottom:12px; transform:translateX(-50%); z-index:2000;
+  /* Top, not bottom: the footer carries a destructive "clear offline copy"
+     link, and a transient overlay must never land on top of it. */
+  .pwa-toast { display:none; position:fixed; left:50%; top:40px; transform:translateX(-50%); z-index:2000; max-width:calc(100vw - 24px);
     background:#234; color:#4af; border:1px solid #456; border-radius:4px; padding:6px 14px;
     font-family:'Courier New',monospace; font-size:12px; cursor:pointer; box-shadow:0 2px 8px #000a; }
   .pwa-toast:hover { background:#2a4055; }
