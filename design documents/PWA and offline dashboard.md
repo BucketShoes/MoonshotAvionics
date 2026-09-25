@@ -24,7 +24,7 @@ on install.
 | Charts | yes (`docs/lib/`) | only if the browser already cached the CDN copies |
 | WebSocket + HTTP to the base station | **no** | yes |
 
-The last row is the one that cannot be fixed from the browser side. `app.js`
+The last row is the one that cannot be fixed from the browser side. `app2.js`
 talks to the base station over `http://<host>` and `ws://<host>:80/ws`; from an
 `https://` page both are blocked as mixed content, and browsers offer no
 exception for private-network addresses. Closing that gap means giving the base
@@ -44,7 +44,7 @@ reinstalling the app could not fix it, because the next tick put it straight
 back. The flag is origin-wide in the omnibox, so it also made the *other* app
 on `bucketshoes.github.io` look broken.
 
-So `app.js` does not make the request. `wifiPathBlocked()` returns true when
+So `app2.js` does not make the request. `wifiPathBlocked()` returns true when
 the page is `https:` and the base host is not localhost, and every WiFi path
 checks it first:
 
@@ -145,6 +145,6 @@ replies. A three-second timeout covers a wedged or already-dead worker.
   Web Bluetooth in Safari at all, so the PWA there is a telemetry viewer, not a
   BLE tool.
 - **`docs/lib/` is not uploaded to the base station.** `compress_web.ps1` only
-  ships `index.html`, `style.css` and `app.js`, so on the AP copy `app.js`
+  ships `index.html`, `style.css` and `app2.js`, so on the AP copy `app2.js`
   falls back to the jsDelivr URLs for charts. Adding the ~75 kB of gzipped
   chart libraries to LittleFS would fix that, if the partition has room.

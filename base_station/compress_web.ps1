@@ -1,5 +1,5 @@
 # Compresses web assets from docs/ into base_station/data/ for LittleFS upload.
-# Edit docs/index.html, docs/style.css, docs/app.js — those are the source of truth.
+# Edit docs/index.html, docs/style.css, docs/app2.js — those are the source of truth.
 #
 # After running:
 #   1. Tools > ESP32 LittleFS Data Upload  (uploads data/ to the filesystem partition)
@@ -9,7 +9,7 @@ $src = Join-Path (Split-Path $PSScriptRoot) "docs"
 $dst = Join-Path $PSScriptRoot "data"
 New-Item -ItemType Directory -Force -Path $dst | Out-Null
 
-foreach ($f in @("index.html", "style.css", "app.js")) {
+foreach ($f in @("index.html", "style.css", "app2.js")) {
     $in  = Join-Path $src $f
     $out = Join-Path $dst "$f.gz"
     if (-not (Test-Path $in)) {

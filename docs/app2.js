@@ -1,3 +1,4 @@
+window.MOONSHOT_APP_LOADED = true;  // read by the build-stamp diagnostic in index.html
 ﻿(function() {
   "use strict";
 

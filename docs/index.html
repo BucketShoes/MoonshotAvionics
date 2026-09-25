@@ -359,6 +359,12 @@
 
     <br /><br /><br />
     <div style="text-align:center"><a href="https://bucketshoes.github.io/MoonshotAvionics/">Moonshot Avionics</a> &middot; <a href="https://github.com/BucketShoes/MoonshotAvionics">Source on GitHub</a></div>
+    <!-- Build stamp. BUMP THIS on every deploy: it is the only way to tell, on a
+         phone with no dev tools, which copy of the page is actually running.
+         Tap it for what the page can see about its own caching + security. -->
+    <div style="text-align:center;margin-top:4px">
+      <span id="buildstamp" style="color:#666;font-size:10px;cursor:pointer;border-bottom:1px dotted #444">build 2026-09-25a &middot; tap for diagnostics</span>
+    </div>
     <br /><br /><br />
 
 <!-- ============ ON-PAGE DEBUG LOG (mobile-friendly devtools replacement) ============ -->
@@ -461,7 +467,44 @@
 </script>
 
 <script src="ble_adapter.js"></script>
-<script src="app.js"></script>
+<script>
+// Self-report: what is this page, who is serving it, what is cached. Written to
+// answer "which version am I actually running?" on a phone, where there are no
+// dev tools and every other signal has turned out to be ambiguous.
+(function(){
+  window.MOONSHOT_BUILD = '2026-09-25a';
+  function report(){
+    var L = [];
+    L.push('build: ' + window.MOONSHOT_BUILD);
+    L.push('url: ' + location.href);
+    L.push('origin: ' + location.origin);
+    L.push('secure context: ' + window.isSecureContext);
+    L.push('app script: ' + (window.MOONSHOT_APP_LOADED ? 'app2.js loaded' : 'NOT LOADED'));
+    L.push('online: ' + navigator.onLine);
+    L.push('standalone: ' + (window.matchMedia('(display-mode: standalone)').matches ? 'yes (installed)' : 'no (browser tab)'));
+    var done = function(){ alert(L.join('\n')); };
+    if (!('serviceWorker' in navigator)) { L.push('service worker: unsupported'); done(); return; }
+    var ctrl = navigator.serviceWorker.controller;
+    L.push('controlled by: ' + (ctrl ? ctrl.scriptURL : 'NOTHING (served by browser cache or network)'));
+    navigator.serviceWorker.getRegistrations().then(function(rs){
+      L.push('registrations on this origin:');
+      if (!rs.length) L.push('  (none)');
+      rs.forEach(function(r){ L.push('  ' + r.scope); });
+      return (window.caches ? caches.keys() : Promise.resolve([]));
+    }).then(function(ks){
+      L.push('caches on this origin:');
+      if (!ks.length) L.push('  (none)');
+      ks.forEach(function(k){ L.push('  ' + k); });
+      done();
+    }).catch(function(e){ L.push('diagnostic error: ' + e.message); done(); });
+  }
+  window.addEventListener('load', function(){
+    var el = document.getElementById('buildstamp');
+    if (el) el.addEventListener('click', report);
+  });
+})();
+</script>
+<script src="app2.js"></script>
 
 <!-- Service worker registration. Deliberately last and fully guarded: on the
      copy served from the base station's AP (plain http://192.168.4.1) there is
@@ -540,7 +583,7 @@
   });
 
   // Sent by sw.js when a background revalidate finds changed bytes but the
-  // service worker itself is unchanged (i.e. you edited app.js or style.css).
+  // service worker itself is unchanged (i.e. you edited app2.js or style.css).
   navigator.serviceWorker.addEventListener('message', function(ev){
     if (ev.data && ev.data.type === 'asset-updated') {
       toast('Dashboard files updated \u2014 tap to reload', function(){

@@ -22,7 +22,7 @@
  *                       are cross-origin and must never be cached or proxied.
  *
  * Because of stale-while-revalidate you do NOT normally need to bump
- * CACHE_VERSION when you edit app.js or style.css: deploy, load the page once
+ * CACHE_VERSION when you edit app2.js or style.css: deploy, load the page once
  * (with internet), and the page offers to reload into the new build. Bump it
  * only to force-evict every client, e.g. after removing a precached file.
  */
@@ -39,7 +39,7 @@ var CACHE_NAME    = CACHE_PREFIX + CACHE_VERSION;
 var PRECACHE = [
   'index.html',
   'style.css',
-  'app.js',
+  'app2.js',
   'ble_adapter.js',
   'manifest.webmanifest',
   'lib/chart.umd.min.js',
@@ -105,7 +105,7 @@ var purging = false;
 // from the renderer's memory cache — so relying on passive revalidation alone
 // would miss deploys. These four are the whole dashboard; the icons and the
 // chart libs change about never.
-var WATCH = ['index.html', 'style.css', 'app.js', 'ble_adapter.js'];
+var WATCH = ['index.html', 'style.css', 'app2.js', 'ble_adapter.js'];
 
 self.addEventListener('message', function(ev) {
   // Sent after the user accepts the update prompt.
@@ -196,7 +196,8 @@ function staleWhileRevalidate(ev, url) {
   var cacheP = caches.open(CACHE_NAME);
   // ignoreSearch so a cache-busted URL still hits its precached entry. Older
   // copies of the page (and any tab still running one) request
-  // `app.js?_=<timestamp>`, a URL that can never be in the cache; without this
+  // `app.js?_=<timestamp>`, a URL that can never be in the cache (and the old
+  // filename too, since app.js was renamed to app2.js); without this
   // they get a 504 offline, no script and no stylesheet load, and the page
   // renders as dead unstyled HTML that looks like a broken app rather than a
   // stale one.
