@@ -1276,8 +1276,8 @@ void setup() {
     resp->addHeader("Cache-Control", "no-cache");
     r->send(resp);
   });
-  httpServer.on("/app2.js", HTTP_GET, [](AsyncWebServerRequest *r){
-    AsyncWebServerResponse *resp = r->beginResponse(LittleFS, "/app2.js.gz", "application/javascript");
+  httpServer.on("/app.js", HTTP_GET, [](AsyncWebServerRequest *r){
+    AsyncWebServerResponse *resp = r->beginResponse(LittleFS, "/app.js.gz", "application/javascript");
     if (!resp) { r->send(503, "text/plain", "LittleFS not mounted"); return; }
     resp->addHeader("Content-Encoding", "gzip");
     resp->addHeader("Cache-Control", "no-cache");

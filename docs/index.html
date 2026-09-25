@@ -359,11 +359,12 @@
 
     <br /><br /><br />
     <div style="text-align:center"><a href="https://bucketshoes.github.io/MoonshotAvionics/">Moonshot Avionics</a> &middot; <a href="https://github.com/BucketShoes/MoonshotAvionics">Source on GitHub</a></div>
-    <!-- Build stamp. BUMP THIS on every deploy: it is the only way to tell, on a
-         phone with no dev tools, which copy of the page is actually running.
-         Tap it for what the page can see about its own caching + security. -->
+    <!-- What the page can see about its own caching and security. On a phone
+         there are no dev tools, and a whole day went into questions this
+         answers in one tap: which build is running, who is serving it, what is
+         cached, and whether anything loaded over http. -->
     <div style="text-align:center;margin-top:4px">
-      <span id="buildstamp" style="color:#666;font-size:10px;cursor:pointer;border-bottom:1px dotted #444">build 2026-09-25b &middot; tap for diagnostics</span>
+      <span id="buildstamp" style="color:#666;font-size:10px;cursor:pointer;border-bottom:1px dotted #444">diagnostics</span>
     </div>
     <br /><br /><br />
 
@@ -472,6 +473,8 @@
 // answer "which version am I actually running?" on a phone, where there are no
 // dev tools and every other signal has turned out to be ambiguous.
 (function(){
+  // Bump this whenever you want an explicit fence to check across deploys.
+  // It is reported by the diagnostic below, not shown on the page.
   window.MOONSHOT_BUILD = '2026-09-25b';
   function report(){
     var L = [];
@@ -479,7 +482,7 @@
     L.push('url: ' + location.href);
     L.push('origin: ' + location.origin);
     L.push('secure context: ' + window.isSecureContext);
-    L.push('app script: ' + (window.MOONSHOT_APP_LOADED ? 'app2.js loaded' : 'NOT LOADED'));
+    L.push('app script: ' + (window.MOONSHOT_APP_LOADED ? 'app.js loaded' : 'NOT LOADED'));
     L.push('online: ' + navigator.onLine);
     try {
       var res = performance.getEntriesByType('resource') || [];
@@ -521,7 +524,7 @@
   });
 })();
 </script>
-<script src="app2.js"></script>
+<script src="app.js"></script>
 
 <!-- Service worker registration. Deliberately last and fully guarded: on the
      copy served from the base station's AP (plain http://192.168.4.1) there is
@@ -600,7 +603,7 @@
   });
 
   // Sent by sw.js when a background revalidate finds changed bytes but the
-  // service worker itself is unchanged (i.e. you edited app2.js or style.css).
+  // service worker itself is unchanged (i.e. you edited app.js or style.css).
   navigator.serviceWorker.addEventListener('message', function(ev){
     if (ev.data && ev.data.type === 'asset-updated') {
       toast('Dashboard files updated \u2014 tap to reload', function(){
