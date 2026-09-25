@@ -31,7 +31,7 @@
 // are origin-wide, so this app namespaces its own and only ever deletes caches
 // carrying this prefix.
 var CACHE_PREFIX  = 'moonshot-';
-var CACHE_VERSION = 'v1';
+var CACHE_VERSION = 'v2';   // bumped 2026-09-25 to force every client to re-precache
 var CACHE_NAME    = CACHE_PREFIX + CACHE_VERSION;
 
 // Everything required to boot with zero network. Relative to this file, so the

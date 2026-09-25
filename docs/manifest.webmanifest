@@ -2,7 +2,6 @@
   "name": "Moonshot Avionics",
   "short_name": "Moonshot",
   "description": "Telemetry dashboard for the Moonshot model rocket avionics and base station.",
-  "id": "/MoonshotAvionics/",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
