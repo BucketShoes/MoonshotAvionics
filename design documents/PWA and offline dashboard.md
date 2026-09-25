@@ -124,7 +124,22 @@ internet.
 
 ## Recovery
 
-Loading `…/?nosw` clears this app's offline copy and unregisters its worker.
+The footer carries two plain links, `diagnostics` and `clear offline copy`.
+Both are on the page on purpose: when the offline copy misbehaves you are
+usually somewhere with no internet and no way to look up what the query string
+was called, and a recovery hatch you cannot remember the name of may as well
+not exist.
+
+`diagnostics` reports what the page can see about itself — build string,
+secure context, installed or browser tab, which worker script is controlling
+the page, every registration on the origin, every cache name, and any
+subresource that loaded over `http://` or `ws://`. Chrome will say a page
+"includes other resources which are not secure" without ever saying which one,
+and on a phone there are no dev tools to ask.
+
+`clear offline copy` is `…/?nosw`. It confirms first — it is the one action
+that can leave you with nothing in the field, and it says so when you are
+offline. It clears this app's offline copy and unregisters its worker.
 This exists because a bad cached build would otherwise survive every reload, and
 there is no dev-tools escape on a phone at a launch site.
 

@@ -365,6 +365,11 @@
          cached, and whether anything loaded over http. -->
     <div style="text-align:center;margin-top:4px">
       <span id="buildstamp" style="color:#666;font-size:10px;cursor:pointer;border-bottom:1px dotted #444">diagnostics</span>
+      <span style="color:#444;font-size:10px">&middot;</span>
+      <!-- Deliberately a plain link, not a remembered incantation: when the
+           offline copy misbehaves you are typically somewhere with no internet
+           and no way to look up what the query string was called. -->
+      <a href="?nosw" style="color:#666;font-size:10px">clear offline copy</a>
     </div>
     <br /><br /><br />
 
@@ -545,6 +550,12 @@
   // unregisters its worker. Needed because a bad cached build would otherwise
   // survive every reload, and at a launch site there is no dev-tools escape.
   if (/[?&]nosw\b/.test(location.search)) {
+    if (!confirm('Clear the offline copy of this page?\n\n' +
+                 'You will need an internet connection to get it back' +
+                 (navigator.onLine ? '.' : ', and you are offline right now.'))) {
+      location.replace(location.pathname);   // back to the normal page, untouched
+      return;
+    }
     // The worker deletes its own caches, then we unregister it. Doing it the
     // other way round loses the race: this very navigation kicked off a
     // background revalidate, and its cache.put() lands after the delete and
