@@ -12,8 +12,9 @@
  *   same-origin GETs    stale-while-revalidate — serve from cache instantly,
  *                       refresh in the background, tell the page if the copy
  *                       on the server changed so it can offer a reload.
- *                       Navigations resolve to the cached index.html under the
- *                       same rule. Never network-first: when the phone is
+ *                       Navigations to the scope root / index.html resolve
+ *                       to the cached index.html under the same rule; other
+ *                       pages are cached under their own URL. Never network-first: when the phone is
  *                       joined to the base station AP there IS a network, it
  *                       just has no route to GitHub, so a network-first fetch
  *                       would stall on every launch.
@@ -239,10 +240,15 @@ self.addEventListener('fetch', function(ev) {
   var scope = new URL('./', self.location.href).pathname;
   if (url.pathname.indexOf(scope) !== 0) return;
 
-  // Navigations always render the cached shell, then check for a new one in
-  // the background. index.html is normalised to a single cache key so that
-  // "/", "/index.html" and the PWA start_url all share one entry.
-  if (req.mode === 'navigate') {
+  // Navigations to the dashboard render the cached shell, then check for a
+  // new one in the background. The scope root, index.html and the manifest
+  // start_url ("./", i.e. the scope root — keep in sync) are normalised to a
+  // single cache key so they all share one entry; the query string is ignored
+  // so "?nosw" still lands on the shell. Any other page under the scope
+  // (ble_speed_test.html, future tool pages) falls through to plain
+  // stale-while-revalidate for its own URL.
+  if (req.mode === 'navigate' &&
+      (url.pathname === scope || url.pathname === scope + 'index.html')) {
     pendingUpdates.length = 0;
     staleWhileRevalidate(ev, new URL('index.html', self.location.href).href);
     return;

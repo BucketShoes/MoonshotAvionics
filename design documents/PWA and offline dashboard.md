@@ -82,6 +82,15 @@ Deliberately *not* network-first: when the phone is joined to the base station
 AP there **is** a network, it just has no route to GitHub, so a network-first
 fetch would stall on every launch.
 
+Navigations to the scope root, `index.html` and the manifest `start_url`
+(`./`, the scope root) all resolve to one cached `index.html`, ignoring the
+query string so `?nosw` still lands on the shell. Every other page under the
+scope — `ble_speed_test.html`, future standalone tool pages — is navigated to
+normally and served stale-while-revalidate under its own URL, so it is cached
+after the first online visit and gets a 504 offline if it never was. (An older
+worker sent *every* navigation to `index.html`, so any other page in `docs/`
+rendered the dashboard once the worker was installed.)
+
 Three details that are load-bearing:
 
 - **Cross-origin requests pass straight through.** The base station's
