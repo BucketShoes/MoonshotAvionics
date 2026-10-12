@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Moonshot Log Viewer</title>
+<!--
+  Offline viewer for raw 8MB flash dumps from the rocket (moonshot) or base
+  station (moonbase). Open this file straight from disk; nothing is uploaded.
+  Decoding mirrors tools/moonlog.py — keep the two in step.
+  Formats: "design documents/Packet, log, and data formats.txt" and
+  "design documents/Ring buffer layout and log storage format.txt". Where the
+  firmware and the doc disagree (page 0x0B flag bits, page 0x0F) the firmware
+  wins.
+-->
+<style>
+:root{
+  --bg:#f9f9f7; --surface:#fcfcfb; --ink:#0b0b0b; --ink2:#52514e; --muted:#8a8984;
+  --line:#e3e2dd; --grid:#ecebe7; --s1:#2a78d6; --s2:#eb6834;
+  --good:#0ca30c; --warn:#fab219; --crit:#d03b3b; --hl:#fff4cc;
+  --ph-boost:#eb683433; --ph-coast:#2a78d622; --ph-drogue:#6250d622; --ph-main:#1baf7a33; --ph-pad:#8a898411;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#0d0d0d; --surface:#1a1a19; --ink:#f0efec; --ink2:#c3c2b7; --muted:#8f8e88;
+  --line:#383835; --grid:#2a2a28; --s1:#3987e5; --s2:#d95926; --hl:#3a3420;
+}}
+:root[data-theme="dark"]{
+  --bg:#0d0d0d; --surface:#1a1a19; --ink:#f0efec; --ink2:#c3c2b7; --muted:#8f8e88;
+  --line:#383835; --grid:#2a2a28; --s1:#3987e5; --s2:#d95926; --hl:#3a3420;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.4 system-ui,sans-serif}
+header{padding:10px 16px;border-bottom:1px solid var(--line);display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+h1{font-size:16px;margin:0 12px 0 0}
+main{padding:12px 16px;display:grid;gap:12px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:10px 12px;min-width:0}
+.card h2{font-size:13px;margin:0 0 8px;color:var(--ink2);font-weight:600}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button,select,input{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:3px 8px}
+button{cursor:pointer} button:hover{border-color:var(--ink2)}
+input[type=number]{width:96px}
+.drop{border:2px dashed var(--line);border-radius:8px;padding:18px;text-align:center;color:var(--ink2)}
+.drop.over{border-color:var(--s1)}
+.mono,table{font-family:ui-monospace,Consolas,monospace;font-size:12px}
+.tablewrap{overflow:auto;max-height:60vh}
+table{border-collapse:collapse;width:100%}
+th,td{padding:2px 6px;border-bottom:1px solid var(--grid);text-align:left;white-space:nowrap;vertical-align:top}
+th{position:sticky;top:0;background:var(--surface);color:var(--ink2);font-weight:600}
+td.f{white-space:normal;word-break:break-word}
+tr.hl td{background:var(--hl)}
+tr.bad td{color:var(--crit)}
+.sess{cursor:pointer} .sess:hover td{background:var(--hl)}
+.ev-crit{color:var(--crit);font-weight:600} .ev-warn{color:var(--ink);background:color-mix(in srgb,var(--warn) 25%,transparent)}
+.ev-good{color:var(--good)}
+.muted{color:var(--muted)}
+.legend{display:flex;gap:14px;flex-wrap:wrap;color:var(--ink2);font-size:12px;margin-bottom:4px}
+.sw{display:inline-block;width:14px;height:3px;vertical-align:middle;margin-right:5px;border-radius:2px}
+.chartbox{position:relative}
+canvas{width:100%;display:block}
+.tip{position:absolute;pointer-events:none;background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font:12px ui-monospace,Consolas,monospace;box-shadow:0 2px 8px #0003;display:none;white-space:nowrap;z-index:2}
+.grid2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
+@media (max-width:900px){.grid2{grid-template-columns:minmax(0,1fr)}}
+.chips label{margin-right:8px;white-space:nowrap}
+</style>
+</head>
+<body>
+<header>
+  <h1>Moonshot Log Viewer</h1>
+  <input type="file" id="file" accept=".bin" multiple>
+  <select id="dumpSel" title="loaded dump"></select>
+  <span id="info" class="muted mono"></span>
+  <span style="flex:1"></span>
+  <button id="theme" title="toggle theme">◐</button>
+</header>
+<main>
+  <div class="drop" id="drop">Drop a rocket or base-station flash dump (.bin) here, or use the file picker. Nothing leaves this page.</div>
+
+  <div class="grid2">
+    <div class="card"><h2>Boot sessions <span class="muted">(click to select; split where record timestamps reset. The base only logs when it hears something, so two base boots can merge into one row — check the UTC pages)</span></h2>
+      <div class="tablewrap" style="max-height:32vh"><table id="sessT"></table></div></div>
+    <div class="card"><h2>Events in selection <span class="muted">(phase/flag changes, commands, pyro, GPS, gaps, malformed records, end of log)</span></h2>
+      <div class="tablewrap" style="max-height:32vh"><table id="evT"></table></div></div>
+  </div>
+
+  <div class="card" id="chartCard" style="display:none"><h2>Flight view <span class="muted">(selection; hover for values, click to jump the table)</span></h2>
+    <div class="legend" id="leg1"></div>
+    <div class="chartbox"><canvas id="c1" height="220"></canvas><div class="tip" id="tip1"></div></div>
+    <div class="legend" id="leg2" style="margin-top:8px"></div>
+    <div class="chartbox"><canvas id="c2" height="140"></canvas><div class="tip" id="tip2"></div></div>
+  </div>
+
+  <div class="card"><h2>Records</h2>
+    <div class="row" style="margin-bottom:6px">
+      rec <input type="number" id="rFrom"> – <input type="number" id="rTo">
+      t(s) <input type="number" id="tFrom" step="0.1"> – <input type="number" id="tTo" step="0.1">
+      <input type="search" id="q" placeholder="text filter, e.g. DROGUE or snr" style="width:220px">
+      <label><input type="checkbox" id="chg"> headers only on change</label>
+      <button id="apply">Apply</button>
+      <button id="csv">Export CSV</button>
+      <span id="count" class="muted"></span>
+    </div>
+    <div class="row chips" id="types" style="margin-bottom:6px"></div>
+    <div class="tablewrap"><table id="recT"></table></div>
+    <div class="row" style="margin-top:6px"><button id="prev">◀ prev</button><button id="next">next ▶</button><span id="page" class="muted"></span></div>
+  </div>
+</main>
+
+<script>
+'use strict';
+// ------------------------------------------------------------- constants
+const SECTOR=4096, CHUNK=256, HDR=6, MAXP=254, SNR_LOCAL=0x7F;
+const PHASES={0:'IDLE',1:'PAD_READY',2:'BOOST',3:'COAST',4:'APOGEE',5:'DROGUE',6:'MAIN_DEPLOY',7:'DESCENT',8:'LANDED',9:'GROUND_TEST',10:'SLEEP',11:'STARTUP',15:'ERROR'};
+const CMDS={1:'ARM',2:'DISARM',3:'FIRE_PYRO',0x10:'SET_TX_RATE',0x12:'SET_RADIO',0x30:'SET_RELAY_RADIO',0x40:'PING',0x50:'OTA_BEGIN',0x51:'OTA_FINALIZE',0x52:'OTA_CONFIRM',0x60:'LR_LISTEN',0xF0:'REBOOT',0xF1:'LOG_ERASE'};
+const PAGELEN={0xAF:10,1:11,2:9,3:7,4:7,5:7,6:11,8:12,9:9,0xA:11,0xB:7,0xC:7,0xD:9,0xF:7};
+const TYPENAMES={0xAF:'HDR/TELEM',0x9A:'CMD',0xBB:'LR',0xCA:'LOGCHUNK',1:'GPS',2:'BARO',3:'MAG',4:'ACCEL',5:'GYRO',6:'GPSX',8:'SYS',9:'PEAKS',0xA:'CMDACK',0xB:'FLIGHT',0xC:'RADIO',0xD:'UTC',0xE:'THRUST',0xF:'PYRO'};
+
+// ------------------------------------------------------------- flash layout
+function partitions(u8){
+  const dv=new DataView(u8.buffer,u8.byteOffset), out={};
+  for(let o=0x8000;o<0x8C00;o+=32){
+    if(u8[o]!==0xAA||u8[o+1]!==0x50) break;
+    let lab=''; for(let i=12;i<28&&u8[o+i];i++) lab+=String.fromCharCode(u8[o+i]);
+    out[lab]=[dv.getUint32(o+4,true),dv.getUint32(o+8,true)];
+  }
+  return out;
+}
+
+// Records numbered via the index (chunk k starts at virtual pos index[k]).
+// Data more than one ring behind the head is skipped as overwritten.
+function numbered(index,data,ring){
+  const used=[]; index.forEach((v,k)=>{ if(v!==0xFFFFFFFF) used.push([k,v]); });
+  const out=[]; if(!used.length) return out;
+  const lastv=used[used.length-1][1];
+  const dv=new DataView(data.buffer,data.byteOffset,data.byteLength);
+  for(let i=0;i<used.length;i++){
+    const [k,v]=used[i], nextv=i+1<used.length?used[i+1][1]:null;
+    if(nextv!==null && nextv<lastv-ring+SECTOR) continue;
+    let pos=v;
+    for(let j=0;j<CHUNK;j++){
+      let s=pos%SECTOR;
+      if(s && s+HDR>SECTOR){ pos+=SECTOR-s; s=0; }
+      let p=pos%ring, ln=data[p];
+      if((ln===0xFF||ln===0)&&s){ pos+=SECTOR-s; p=pos%ring; ln=data[p]; }
+      if(ln===0xFF||ln===0||ln>MAXP) break;
+      if(nextv!==null && pos>=nextv) break;
+      if((pos%SECTOR)+HDR+ln>SECTOR) break;
+      if(pos<lastv-ring){ pos+=HDR+ln; continue; }
+      out.push({rec:k*CHUNK+j, vpos:pos, snr:dv.getInt8(p+1), ts:dv.getUint32(p+2,true), pl:data.subarray(p+HDR,p+HDR+ln)});
+      pos+=HDR+ln;
+    }
+  }
+  return out;
+}
+
+// ------------------------------------------------------------- decoding
+const rd=pl=>new DataView(pl.buffer,pl.byteOffset,pl.byteLength);
+function frac(v){ if(v>49999) return {65533:'nofix',65534:'gpsinit',65535:'gpsoff'}[v]||String(v); return '.'+String(v*2).padStart(5,'0'); }
+function flagsStr(f){
+  const b=[]; if(f&0x10)b.push('ARMED'); if(f&0x20)b.push('P1FIRED'); if(f&0x40)b.push('P2FIRED'); if(f&0x80)b.push('P3FIRED');
+  if(f&0x100)b.push('LOWBATT'); b.push(f&0x200?'baro_ok':'baroBAD'); b.push(f&0x400?'accel_ok':'accelBAD'); if(f&0x800)b.push('armReady');
+  return b.join(' ');
+}
+function bits3(f,sh){ let s=''; for(let i=0;i<3;i++) s+=(f>>(sh+i))&1?'123'[i]:'-'; return s; }
+function page(t,pl,o){ // pl = payload, o = offset of page body
+  const d=rd(pl), n=pl.length-o;
+  try{
+    switch(t){
+      case 1: return ['GPS',{lat:d.getInt32(o,true)/1e7,lon:d.getInt32(o+4,true)/1e7,hdop:pl[o+8]/10,sats:pl[o+9]}];
+      case 2: return ['BARO',{altM:d.getInt32(o,true)/100,vvel:d.getInt16(o+4,true)/10,gndM:d.getInt16(o+6,true)}];
+      case 3: return ['MAG',{x:d.getInt16(o,true),y:d.getInt16(o+2,true),z:d.getInt16(o+4,true)}];
+      case 4: { const x=d.getInt16(o,true),y=d.getInt16(o+2,true),z=d.getInt16(o+4,true); return ['ACCEL',{x,y,z,tot:Math.round(Math.hypot(x,y,z))}]; }
+      case 5: return ['GYRO',{x:d.getInt16(o,true)/10,y:d.getInt16(o+2,true)/10,z:d.getInt16(o+4,true)/10}];
+      case 6: return ['GPSX',{spd:d.getUint16(o,true)/100,crs:d.getUint16(o+2,true)/100,age:pl[o+4],vdop:pl[o+5]/10,altM:d.getInt32(o+6,true)/100}];
+      case 8: return ['SYS',{tempC:d.getInt8(o),heapKB:d.getUint16(o+1,true),upS:d.getUint16(o+3,true),battMv:d.getUint16(o+5,true),logRec:d.getUint32(o+7,true)}];
+      case 9: return ['PEAKS',{maxAltM:d.getInt32(o,true)/100,maxG:d.getUint16(o+4,true)/100,maxVv:d.getInt16(o+6,true)/10}];
+      case 0xA: return ['CMDACK',{nonce:d.getUint32(o,true),result:pl[o+4],rssi:d.getInt8(o+5),snr:d.getInt8(o+6)/4,badHmac:d.getUint16(o+7,true),rxPos:pl[o+9]}];
+      case 0xB: { const f=d.getUint16(o+4,true); return ['FLIGHT',{tLaunchMs:d.getInt32(o,true),fired:bits3(f,0),cont:bits3(f,4),hv:(f>>8)&1}]; }
+      case 0xC: return ['RADIO',{delayedTx:d.getUint16(o,true),invalidRx:d.getUint16(o+2,true),noise:d.getInt8(o+4),sync:pl[o+5]}];
+      case 0xD: { const ms=Number(d.getBigUint64(o,true)); return ['UTC',{utc:ms?new Date(ms).toISOString().replace('T',' '):'none',ms}]; }
+      case 0xE: return ['THRUST',{durMs:d.getUint16(o,true),minMg:d.getInt16(o+2,true)*8,maxMg:d.getInt16(o+4,true)*8,n:n-6}];
+      case 0xF: { const f=pl[o]; return ['PYRO',{cont:bits3(f,0),hv:(f>>3)&1,fired:bits3(f,4),active:pl[o+1],durMs:d.getUint16(o+2,true),hvMv:d.getUint16(o+4,true)}]; }
+    }
+  }catch(e){ return ['TRUNC'+hex(t),{raw:hexs(pl.subarray(o))}]; }
+  return ['PAGE'+hex(t),{raw:hexs(pl.subarray(o))}];
+}
+const hex=v=>v.toString(16).toUpperCase().padStart(2,'0');
+const hexs=a=>Array.from(a,b=>b.toString(16).padStart(2,'0')).join('');
+function decode(pl){
+  const t=pl[0], d=rd(pl);
+  if(t<0x80) return page(t,pl,1);
+  if(t===0xAF){
+    if(pl.length<10) return ['TRUNCAF',{raw:hexs(pl)}];
+    const f=d.getUint16(8,true), alt=d.getInt16(6,true);
+    const o={dev:pl[1],lat:frac(d.getUint16(2,true)),lon:frac(d.getUint16(4,true)),altM:alt===-32768?'inv':alt,phase:PHASES[f&15]??String(f&15),flags:flagsStr(f),_f:f};
+    if(pl.length>10){ const [nm,pd]=page(pl[10],pl,11); o.page=nm; for(const k in pd) o['p.'+k]=pd[k]; return ['TELEM',o]; }
+    return ['HDR',o];
+  }
+  if(t===0x9A && pl.length>=17){
+    const p=pl.subarray(7,pl.length-10), o={target:pl[1],cmd:CMDS[pl[2]]||'0x'+hex(pl[2]),nonce:d.getUint32(3,true),params:hexs(p)};
+    const pd=rd(p);
+    if(pl[2]===1&&p.length>=9) Object.assign(o,{boostMg:pd.getUint16(0,true),boostAltM:pd.getUint16(2,true),coastAltM:pd.getUint16(4,true),mainAltM:pd.getUint16(6,true),armFlags:p[8]});
+    if(pl[2]===1&&p.length>=13) Object.assign(o,{drogueMs:pd.getUint16(9,true),mainMs:pd.getUint16(11,true)});
+    if(pl[2]===0x12&&p.length>=3) Object.assign(o,{ch:p[0],sf:p[1],pwr:pd.getInt8(2)});
+    if(pl[2]===0x10&&p.length>=1) o.rate=pd.getInt8(0);
+    return ['CMD',o];
+  }
+  if(t===0xBB&&pl.length>=5){ const w=pl[2]|pl[3]<<8|pl[4]<<16; return ['LR',{latFrac:w&0x7FF,lonFrac:(w>>11)&0x7FF,lowBatt:(w>>22)&1}]; }
+  if(t===0xCA&&pl.length>=7) return ['LOGCHUNK',{src:pl[1],start:d.getUint32(2,true),count:pl[6]}];
+  return ['UNK'+hex(t),{raw:hexs(pl)}];
+}
+const malformed=pl=>{ const t=pl[0]; if(!(t in TYPENAMES)) return true; return (t in PAGELEN && t!==0xAF && pl.length!==PAGELEN[t]) || (t===0xAF && pl.length<10); };
+function fmt(d){ return Object.entries(d).filter(([k])=>k[0]!=='_').map(([k,v])=>k+'='+(typeof v==='number'&&!Number.isInteger(v)?+v.toFixed(3):v)).join(' '); }
+
+// ------------------------------------------------------------- model
+const dumps=[]; let D=null; // current dump
+let sel={rFrom:0,rTo:Infinity,tFrom:-Infinity,tTo:Infinity}, filtered=[], pageNo=0; const PAGE=1000;
+
+function loadDump(name,buf){
+  const u8=new Uint8Array(buf), parts=partitions(u8);
+  if(!parts.log_index||!parts.log_data){ alert(name+': no log_index/log_data partition in this image'); return; }
+  const [io,isz]=parts.log_index, [dO,dsz]=parts.log_data;
+  const idv=new DataView(buf,io,isz), index=[]; for(let i=0;i<isz;i+=4) index.push(idv.getUint32(i,true));
+  const data=u8.subarray(dO,dO+dsz);
+  const recs=numbered(index,data,dsz);
+  const isBase=!!parts.fs;
+  for(const r of recs){ const [k,d]=decode(r.pl); r.kind=k; r.d=d; r.t=r.ts/1000; r.bad=malformed(r.pl); r.type=r.pl[0]; }
+  // sessions: timestamp goes backwards by >2s => new boot
+  const sess=[]; let cur=null, prev=null;
+  for(let i=0;i<recs.length;i++){ const r=recs[i];
+    // A boot resets the timestamp. Corrupt records can also look like a reset,
+    // so only split when the records a little further on stay low as well.
+    const ahead=recs[Math.min(i+12,recs.length-1)];
+    if(r.bad) continue;
+    if(prev&&r.ts+2000<prev.ts&&!(ahead.ts+2000<prev.ts)){ r.bad=r.suspect=true; continue; }
+    if(!prev||(r.ts+2000<prev.ts&&ahead.ts+2000<prev.ts)){ cur={i0:i,i1:i,r0:r.rec,r1:r.rec,t0:r.t,t1:r.t,n:0,maxPhase:0,armed:false}; sess.push(cur); }
+    cur.i1=i; cur.r1=r.rec; cur.t1=Math.max(cur.t1,r.t); cur.n++;
+    if(r.kind==='HDR'||r.kind==='TELEM'){ const f=r.d._f; cur.maxPhase=Math.max(cur.maxPhase,f&15); if(f&0x10) cur.armed=true; }
+    prev=r;
+  }
+  const used=index.filter(v=>v!==0xFFFFFFFF);
+  D={name,isBase,recs,sess,ring:dsz,head:used.length?used[used.length-1]:0,chunks:used.length};
+  dumps.push(D);
+  const o=document.createElement('option'); o.textContent=(isBase?'BASE ':'ROCKET ')+name; o.value=dumps.length-1; dumpSel.appendChild(o); dumpSel.value=o.value;
+  showDump();
+}
+
+function showDump(){
+  info.textContent=`${D.isBase?'base station':'rocket'} · ${D.recs.length} records · ${D.chunks} index chunks · ring ${D.ring} B · head vpos ${D.head}${D.head>D.ring?' (wrapped)':''}`;
+  const kinds=[...new Set(D.recs.map(r=>r.type))].sort((a,b)=>a-b);
+  types.innerHTML=kinds.map(t=>`<label><input type="checkbox" data-t="${t}" checked> ${hex(t)} ${TYPENAMES[t]||'?'}</label>`).join('')+' <button id="tAll">all</button> <button id="tNone">none</button>';
+  tAll.onclick=()=>{types.querySelectorAll('input').forEach(c=>c.checked=true);};
+  tNone.onclick=()=>{types.querySelectorAll('input').forEach(c=>c.checked=false);};
+  const rows=D.sess.map((s,i)=>`<tr class="sess" data-i="${i}"><td>${s.r0}–${s.r1}</td><td>${s.t0.toFixed(1)}–${s.t1.toFixed(1)}s</td><td>${s.n}</td><td>${s.armed?'<b>armed</b>':''}</td><td>${s.maxPhase>=2?'<b>'+PHASES[s.maxPhase]+'</b>':''}</td></tr>`);
+  sessT.innerHTML='<tr><th>records</th><th>uptime</th><th>n</th><th>arm</th><th>max phase</th></tr>'+rows.reverse().join('');
+  sessT.querySelectorAll('tr.sess').forEach(tr=>tr.onclick=()=>selectSession(+tr.dataset.i));
+  // default: most recent session that left the pad, else last session
+  let pick=D.sess.length-1; for(let i=D.sess.length-1;i>=0;i--) if(D.sess[i].maxPhase>=2){pick=i;break;}
+  selectSession(pick);
+}
+
+function selectSession(i){
+  const s=D.sess[i]; rFrom.value=s.r0; rTo.value=s.r1; tFrom.value=''; tTo.value='';
+  applyFilter();
+}
+
+function readSel(){
+  sel.rFrom=rFrom.value===''?0:+rFrom.value; sel.rTo=rTo.value===''?Infinity:+rTo.value;
+  sel.tFrom=tFrom.value===''?-Infinity:+tFrom.value; sel.tTo=tTo.value===''?Infinity:+tTo.value;
+}
+const inSel=r=>r.rec>=sel.rFrom&&r.rec<=sel.rTo&&r.t>=sel.tFrom&&r.t<=sel.tTo;
+
+function applyFilter(){
+  readSel();
+  const on=new Set([...types.querySelectorAll('input:checked')].map(c=>+c.dataset.t));
+  const q=document.getElementById('q').value.trim().toLowerCase(); let last=null;
+  filtered=[];
+  for(const r of D.recs){
+    if(!inSel(r)||!on.has(r.type)) continue;
+    if(chg.checked&&r.kind==='HDR'){ const key=r.d.phase+r.d.flags; if(key===last) continue; last=key; }
+    if(q){ const line=(r.kind+' '+fmt(r.d)).toLowerCase(); if(!line.includes(q)) continue; }
+    filtered.push(r);
+  }
+  pageNo=0; renderTable(); renderEvents(); renderCharts();
+}
+
+function rowHtml(r,hl){
+  const snr=r.snr===SNR_LOCAL?'':(r.snr/4).toFixed(2);
+  return `<tr id="r${r.rec}" class="${r.bad?'bad':''}${hl?' hl':''}"><td>${r.rec}</td><td>${r.t.toFixed(3)}</td><td>${snr}</td><td>${r.kind}</td><td class="f">${fmt(r.d)}</td></tr>`;
+}
+function renderTable(hlRec){
+  const n=filtered.length, start=pageNo*PAGE, end=Math.min(n,start+PAGE);
+  recT.innerHTML='<tr><th>rec</th><th>t (s)</th><th>snr</th><th>kind</th><th>fields</th></tr>'+filtered.slice(start,end).map(r=>rowHtml(r,r.rec===hlRec)).join('');
+  count.textContent=`${n} records`; page.textContent=n?`${start+1}–${end} of ${n}`:'';
+  if(hlRec!==undefined){ const el=document.getElementById('r'+hlRec); if(el) el.scrollIntoView({block:'center'}); }
+}
+function jumpTo(t){
+  let i=filtered.findIndex(r=>r.t>=t); if(i<0) i=filtered.length-1; if(i<0) return;
+  pageNo=Math.floor(i/PAGE); renderTable(filtered[i].rec);
+}
+
+// ------------------------------------------------------------- events
+// Things worth seeing one by one, including the absence of things: gaps in
+// the 10Hz header stream, malformed records, and what the log ended on.
+function renderEvents(){
+  const ev=[]; const add=(r,cls,txt)=>ev.push(`<tr class="sess" data-t="${r.t}"><td>${r.rec}</td><td>${r.t.toFixed(3)}</td><td class="f ${cls}">${txt}</td></tr>`);
+  let utcStale=false,lastPh=null,lastFl=null,lastHdr=null,lastFired=null,lastGps=null,lastUtc=null,lastPkt=null,lastR=null;
+  for(const r of D.recs){
+    if(!inSel(r)) continue;
+    const k=r.kind,d=r.d;
+    if(r.bad){ add(r,'ev-crit',(r.suspect?'out-of-sequence timestamp (corrupt sector?): ':'malformed record (bad type/length — corrupt or half-written): ')+k+' '+fmt(d)); continue; }
+    if(k==='HDR'||k==='TELEM'){
+      if(lastPh!==null&&d.phase!==lastPh) add(r,'ev-warn',`phase ${lastPh} → <b>${d.phase}</b>  alt ${d.altM} m MSL (fusion/1s EMA)`);
+      if(lastFl!==null&&d.flags!==lastFl) add(r,'',`flags: ${lastFl} → ${d.flags}`);
+      if(!D.isBase&&lastHdr&&r.t-lastHdr.t>0.3) add(r,'ev-crit',`gap in 10Hz header stream: ${(r.t-lastHdr.t).toFixed(2)} s with no header record`);
+      if(D.isBase&&lastPkt&&r.t-lastPkt.t>4.5&&r.t-lastPkt.t<120) add(r,'muted',`${(r.t-lastPkt.t).toFixed(1)} s since previous packet (at a 2 s telemetry rate, one 4 s gap per 20 s is the LR beacon's slot; more than that is lost packets)`);
+      lastPh=d.phase; lastFl=d.flags; lastHdr=r; if(k==='TELEM') lastPkt=r;
+      if(k==='TELEM'&&d.page==='THRUST') add(r,'ev-good',`thrust curve packet received: ${d['p.n']} samples over ${d['p.durMs']} ms, ${d['p.minMg']}..${d['p.maxMg']} mg (${r.pl.length} bytes)`);
+    }
+    if(k==='CMD') add(r,'ev-warn',(r.snr===SNR_LOCAL?(D.isBase?'base sent ':'cmd '):'cmd received ')+fmt(d));
+    if(k==='CMDACK'&&d.result!==0) add(r,'ev-crit','command nonce '+d.nonce+' result '+d.result);
+    if(k==='FLIGHT'){ const f=d.fired+d.cont; if(lastFired!==null&&f!==lastFired) add(r,'ev-crit',`pyro: fired ${d.fired} continuity ${d.cont} hv ${d.hv}`); lastFired=f; }
+    if(k==='PYRO'&&d.active) add(r,'ev-crit',`pyro channel ${d.active} energised, pulse ${d.durMs} ms, hv ${d.hvMv} mV`);
+    if(k==='GPS'){ const fix=d.sats>0; if(lastGps!==null&&fix!==lastGps) add(r,fix?'ev-good':'ev-warn',fix?`GPS fix regained (${d.sats} sats) ${d.lat}, ${d.lon}`:'GPS fix lost'); lastGps=fix; }
+    if(k==='UTC'){ if(d.ms&&d.ms===lastUtc&&!utcStale) add(r,'muted','UTC clock stopped advancing (no GPS time update since the previous UTC page)'); const was=utcStale; utcStale=!!d.ms&&d.ms===lastUtc; if(was&&!utcStale) add(r,'muted','UTC clock advancing again: '+d.utc); lastUtc=d.ms; }
+    lastR=r;
+  }
+  if(lastR){
+    let tail=`last record in selection: ${lastR.kind} ${fmt(lastR.d)}`;
+    if(lastHdr&&!D.isBase) tail+=` — last header: phase ${lastHdr.d.phase}, alt ${lastHdr.d.altM} m (EMA). Headers are logged every 100 ms, so anything after ${lastR.t.toFixed(3)} s was never written.`;
+    add(lastR,'ev-warn',tail);
+  }
+  evT.innerHTML='<tr><th>rec</th><th>t (s)</th><th>event</th></tr>'+ev.join('');
+  evT.querySelectorAll('tr.sess').forEach(tr=>tr.onclick=()=>jumpTo(+tr.dataset.t));
+}
+
+// ------------------------------------------------------------- charts
+// Two stacked charts on one shared time axis (never two y-scales on one chart):
+// altitude (raw baro vs the 1s fast EMA that flight logic uses), and accel total.
+const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+let chartData=null;
+function renderCharts(){
+  if(D.isBase){ chartData=null; chartCard.style.display='none'; return; }
+  const baro=[],ema=[],acc=[],phases=[];
+  // Zoom to the flight when the selection contains one: 15 s before the first
+  // BOOST header to the end. Narrow the t range above to override.
+  let tMin=-Infinity; if(sel.tFrom===-Infinity){ const b=D.recs.find(r=>inSel(r)&&!r.bad&&r.kind==='HDR'&&(r.d._f&15)>=2&&(r.d._f&15)<=8); if(b) tMin=b.t-15; }
+  for(const r of D.recs){ if(!inSel(r)||r.bad||r.t<tMin) continue;
+    if(r.kind==='BARO'&&r.d.altM) baro.push([r.t,r.d.altM]);
+    if(r.kind==='HDR'&&r.d.altM!=='inv'){ ema.push([r.t,r.d.altM]); phases.push([r.t,r.d.phase]); }
+    if(r.kind==='ACCEL'&&r.d.tot) acc.push([r.t,r.d.tot/1000]);
+  }
+  if(baro.length<2){ chartCard.style.display='none'; chartData=null; return; }
+  chartCard.style.display='';
+  chartData={baro,ema,acc,phases,t0:baro[0][0],t1:baro[baro.length-1][0]};
+  leg1.innerHTML=`<span><i class="sw" style="background:var(--s1)"></i>raw baro alt, m MSL</span><span><i class="sw" style="background:var(--s2)"></i>fast EMA (1 s), m MSL — what main-deploy uses</span><span class="muted">bands = flight phase</span>`;
+  leg2.innerHTML=`<span><i class="sw" style="background:var(--s1)"></i>accel magnitude, g (ADXL345 clips at ~16 g per axis)</span>`;
+  drawAll();
+}
+function phaseColor(p){ return {BOOST:'--ph-boost',COAST:'--ph-coast',DROGUE:'--ph-drogue',APOGEE:'--ph-drogue',MAIN_DEPLOY:'--ph-main',DESCENT:'--ph-main',PAD_READY:'--ph-pad'}[p]; }
+function setup(cv){ const dpr=devicePixelRatio||1, w=cv.clientWidth, h=+cv.getAttribute('height'); cv.width=w*dpr; cv.height=h*dpr; cv.style.height=h+'px'; const g=cv.getContext('2d'); g.setTransform(dpr,0,0,dpr,0,0); return [g,w,h]; }
+const PAD={l:52,r:10,t:8,b:20};
+function drawChart(cv,series,cols,hoverT){
+  const [g,w,h]=setup(cv), C=chartData; let lo=Infinity,hi=-Infinity;
+  for(const s of series) for(const p of s){ if(p[1]<lo)lo=p[1]; if(p[1]>hi)hi=p[1]; }
+  if(hi===lo){hi+=1;lo-=1;} const pad=(hi-lo)*0.05; lo-=pad; hi+=pad;
+  const X=t=>PAD.l+(t-C.t0)/(C.t1-C.t0||1)*(w-PAD.l-PAD.r), Y=v=>PAD.t+(hi-v)/(hi-lo)*(h-PAD.t-PAD.b);
+  // phase bands
+  for(let i=0;i<C.phases.length;i++){ const [t,p]=C.phases[i], tn=i+1<C.phases.length?C.phases[i+1][0]:C.t1, c=phaseColor(p); if(!c) continue; g.fillStyle=css(c); g.fillRect(X(t),PAD.t,Math.max(1,X(tn)-X(t)),h-PAD.t-PAD.b); }
+  // grid + axes
+  g.strokeStyle=css('--grid'); g.fillStyle=css('--ink2'); g.font='11px system-ui'; g.lineWidth=1;
+  const step=niceStep((hi-lo)/4); for(let v=Math.ceil(lo/step)*step;v<=hi;v+=step){ const y=Math.round(Y(v))+.5; g.beginPath(); g.moveTo(PAD.l,y); g.lineTo(w-PAD.r,y); g.stroke(); g.fillText(+v.toFixed(2),4,y+4); }
+  const ts=niceStep((C.t1-C.t0)/8); for(let t=Math.ceil(C.t0/ts)*ts;t<=C.t1;t+=ts){ g.fillText(+t.toFixed(1)+'s',X(t)-12,h-5); }
+  series.forEach((s,i)=>{ g.strokeStyle=css(cols[i]); g.lineWidth=2; g.lineJoin='round'; g.beginPath(); s.forEach((p,j)=>j?g.lineTo(X(p[0]),Y(p[1])):g.moveTo(X(p[0]),Y(p[1]))); g.stroke(); });
+  if(hoverT!=null){ g.strokeStyle=css('--ink2'); g.lineWidth=1; g.beginPath(); g.moveTo(X(hoverT)+.5,PAD.t); g.lineTo(X(hoverT)+.5,h-PAD.b); g.stroke(); }
+  return {X,w};
+}
+function niceStep(x){ const p=Math.pow(10,Math.floor(Math.log10(x||1))), m=x/p; return (m<1.5?1:m<3.5?2:m<7.5?5:10)*p; }
+let hoverT=null;
+function drawAll(){ if(!chartData) return; drawChart(c1,[chartData.baro,chartData.ema],['--s1','--s2'],hoverT); drawChart(c2,[chartData.acc],['--s1'],hoverT); }
+function nearest(arr,t){ let lo=0,hi=arr.length-1; while(hi-lo>1){ const m=(lo+hi)>>1; if(arr[m][0]<t) lo=m; else hi=m; } return arr.length?(Math.abs(arr[lo][0]-t)<Math.abs(arr[hi][0]-t)?arr[lo]:arr[hi]):null; }
+function hook(cv,tip){
+  const tAt=e=>{ const r=cv.getBoundingClientRect(), C=chartData; return C.t0+(e.clientX-r.left-PAD.l)/(r.width-PAD.l-PAD.r)*(C.t1-C.t0); };
+  cv.onmousemove=e=>{ if(!chartData) return; hoverT=tAt(e); drawAll();
+    const C=chartData, b=nearest(C.baro,hoverT), m=nearest(C.ema,hoverT), a=nearest(C.acc,hoverT), p=nearest(C.phases,hoverT);
+    for(const [t,el] of [[tip1,c1],[tip2,c2]]){ t.style.display='block'; t.innerHTML=`t ${hoverT.toFixed(2)} s · ${p?p[1]:''}<br>baro ${b?b[1].toFixed(1):'-'} m · EMA ${m?m[1]:'-'} m<br>accel ${a?a[1].toFixed(2):'-'} g`;
+      const r=el.getBoundingClientRect(), x=e.clientX-r.left; t.style.left=Math.min(x+12,r.width-t.offsetWidth-4)+'px'; t.style.top='4px'; }
+  };
+  cv.onmouseleave=()=>{ hoverT=null; tip1.style.display=tip2.style.display='none'; drawAll(); };
+  cv.onclick=e=>{ if(chartData) jumpTo(tAt(e)); };
+}
+hook(c1,tip1); hook(c2,tip2);
+addEventListener('resize',drawAll);
+
+// ------------------------------------------------------------- wiring
+function readFiles(files){ for(const f of files){ const fr=new FileReader(); fr.onload=()=>loadDump(f.name,fr.result); fr.readAsArrayBuffer(f); } }
+file.onchange=()=>readFiles(file.files);
+drop.ondragover=e=>{e.preventDefault();drop.classList.add('over');};
+drop.ondragleave=()=>drop.classList.remove('over');
+drop.ondrop=e=>{e.preventDefault();drop.classList.remove('over');readFiles(e.dataTransfer.files);};
+dumpSel.onchange=()=>{ D=dumps[+dumpSel.value]; showDump(); };
+apply.onclick=applyFilter;
+document.getElementById('q').onkeydown=e=>{ if(e.key==='Enter') applyFilter(); };
+prev.onclick=()=>{ if(pageNo>0){pageNo--;renderTable();} };
+next.onclick=()=>{ if((pageNo+1)*PAGE<filtered.length){pageNo++;renderTable();} };
+csv.onclick=()=>{
+  const lines=['rec,t_s,snr,kind,fields'].concat(filtered.map(r=>[r.rec,r.t,r.snr===SNR_LOCAL?'':r.snr/4,r.kind,'"'+fmt(r.d).replace(/"/g,'""')+'"'].join(',')));
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([lines.join('\n')],{type:'text/csv'})); a.download=(D?D.name.replace(/\.bin$/,''):'log')+'.csv'; a.click();
+};
+theme.onclick=()=>{ const r=document.documentElement, dark=r.dataset.theme?r.dataset.theme==='dark':matchMedia('(prefers-color-scheme: dark)').matches; r.dataset.theme=dark?'light':'dark'; drawAll(); };
+</script>
+</body>
+</html>
