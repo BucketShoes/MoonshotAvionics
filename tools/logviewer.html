@@ -82,11 +82,16 @@ canvas{width:100%;display:block}
       <div class="tablewrap" style="max-height:32vh"><table id="evT"></table></div></div>
   </div>
 
-  <div class="card" id="chartCard" style="display:none"><h2>Flight view <span class="muted">(selection; hover for values, click to jump the table)</span></h2>
+  <div class="card" id="chartCard" style="display:none"><h2>Flight view <span class="muted">(selection, zoomed to the flight if there is one; hover for values, click to jump the table)</span></h2>
     <div class="legend" id="leg1"></div>
     <div class="chartbox"><canvas id="c1" height="220"></canvas><div class="tip" id="tip1"></div></div>
     <div class="legend" id="leg2" style="margin-top:8px"></div>
     <div class="chartbox"><canvas id="c2" height="140"></canvas><div class="tip" id="tip2"></div></div>
+  </div>
+
+  <div class="card" id="thrustCard" style="display:none"><h2>Thrust curve <span class="muted">(page 0x0E, X-axis accel in g)</span></h2>
+    <div class="muted" id="thrustInfo" style="margin-bottom:4px"></div>
+    <div class="chartbox"><canvas id="c3" height="160"></canvas></div>
   </div>
 
   <div class="card"><h2>Records</h2>
@@ -338,55 +343,89 @@ function renderEvents(){
 // altitude (raw baro vs the 1s fast EMA that flight logic uses), and accel total.
 const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 let chartData=null;
+// chartData: {top:[series], bot:[series], phases:[[t,phase]], t0, t1, tip(t)->html}
 function renderCharts(){
-  if(D.isBase){ chartData=null; chartCard.style.display='none'; return; }
-  const baro=[],ema=[],acc=[],phases=[];
-  // Zoom to the flight when the selection contains one: 15 s before the first
-  // BOOST header to the end. Narrow the t range above to override.
-  let tMin=-Infinity; if(sel.tFrom===-Infinity){ const b=D.recs.find(r=>inSel(r)&&!r.bad&&r.kind==='HDR'&&(r.d._f&15)>=2&&(r.d._f&15)<=8); if(b) tMin=b.t-15; }
-  for(const r of D.recs){ if(!inSel(r)||r.bad||r.t<tMin) continue;
-    if(r.kind==='BARO'&&r.d.altM) baro.push([r.t,r.d.altM]);
-    if(r.kind==='HDR'&&r.d.altM!=='inv'){ ema.push([r.t,r.d.altM]); phases.push([r.t,r.d.phase]); }
-    if(r.kind==='ACCEL'&&r.d.tot) acc.push([r.t,r.d.tot/1000]);
+  renderThrust();
+  const top=[],bot=[],phases=[]; let tip;
+  if(D.isBase){
+    // What the base heard: the rocket's header altitude (its 1 s EMA) and the SNR of each packet.
+    const alt=[],snr=[];
+    for(const r of D.recs){ if(!inSel(r)||r.bad||r.kind!=='TELEM') continue;
+      if(r.d.altM!=='inv') alt.push([r.t,r.d.altM]); phases.push([r.t,r.d.phase]); if(r.snr!==SNR_LOCAL) snr.push([r.t,r.snr/4]); }
+    // Zoom to the flight if there is one: 30 s before the first BOOST packet to 30 s after the last flight-phase packet.
+    const fl=phases.filter(p=>['BOOST','COAST','APOGEE','DROGUE','MAIN_DEPLOY','DESCENT'].includes(p[1]));
+    let lo=-Infinity,hi=Infinity; if(fl.length&&sel.tFrom===-Infinity){ lo=fl[0][0]-30; hi=fl[fl.length-1][0]+30; }
+    const clip=a=>a.filter(p=>p[0]>=lo&&p[0]<=hi);
+    top.push(clip(alt)); bot.push(clip(snr)); phases.splice(0,phases.length,...clip(phases));
+    leg1.innerHTML=`<span><i class="sw" style="background:var(--s1)"></i>rocket header altitude (1 s EMA), m MSL — one point per received packet</span><span class="muted">bands = flight phase reported</span>`;
+    leg2.innerHTML=`<span><i class="sw" style="background:var(--s1)"></i>packet SNR, dB (SF9 decodes down to about −12.5)</span>`;
+    tip=t=>{ const a=nearest(top[0],t), n=nearest(bot[0],t), p=nearest(phases,t); return `t ${t.toFixed(2)} s · ${p?p[1]:''}<br>alt ${a?a[1]:'-'} m (packet at ${a?a[0].toFixed(2):'-'} s)<br>SNR ${n?n[1]:'-'} dB`; };
+  } else {
+    const baro=[],ema=[],acc=[];
+    // Zoom to the flight when the selection contains one: 15 s before the first
+    // BOOST header to the end. Narrow the t range above to override.
+    let tMin=-Infinity; if(sel.tFrom===-Infinity){ const b=D.recs.find(r=>inSel(r)&&!r.bad&&r.kind==='HDR'&&(r.d._f&15)>=2&&(r.d._f&15)<=8); if(b) tMin=b.t-15; }
+    for(const r of D.recs){ if(!inSel(r)||r.bad||r.t<tMin) continue;
+      if(r.kind==='BARO'&&r.d.altM) baro.push([r.t,r.d.altM]);
+      if(r.kind==='HDR'&&r.d.altM!=='inv'){ ema.push([r.t,r.d.altM]); phases.push([r.t,r.d.phase]); }
+      if(r.kind==='ACCEL'&&r.d.tot) acc.push([r.t,r.d.tot/1000]);
+    }
+    top.push(baro,ema); bot.push(acc);
+    leg1.innerHTML=`<span><i class="sw" style="background:var(--s1)"></i>raw baro alt, m MSL</span><span><i class="sw" style="background:var(--s2)"></i>fast EMA (1 s), m MSL — what main-deploy uses</span><span class="muted">bands = flight phase</span>`;
+    leg2.innerHTML=`<span><i class="sw" style="background:var(--s1)"></i>accel magnitude, g (ADXL345 clips at ~16 g per axis)</span>`;
+    tip=t=>{ const b=nearest(baro,t), m=nearest(ema,t), a=nearest(acc,t), p=nearest(phases,t); return `t ${t.toFixed(2)} s · ${p?p[1]:''}<br>baro ${b?b[1].toFixed(1):'-'} m · EMA ${m?m[1]:'-'} m<br>accel ${a?a[1].toFixed(2):'-'} g`; };
   }
-  if(baro.length<2){ chartCard.style.display='none'; chartData=null; return; }
+  if(top[0].length<2){ chartCard.style.display='none'; chartData=null; return; }
   chartCard.style.display='';
-  chartData={baro,ema,acc,phases,t0:baro[0][0],t1:baro[baro.length-1][0]};
-  leg1.innerHTML=`<span><i class="sw" style="background:var(--s1)"></i>raw baro alt, m MSL</span><span><i class="sw" style="background:var(--s2)"></i>fast EMA (1 s), m MSL — what main-deploy uses</span><span class="muted">bands = flight phase</span>`;
-  leg2.innerHTML=`<span><i class="sw" style="background:var(--s1)"></i>accel magnitude, g (ADXL345 clips at ~16 g per axis)</span>`;
+  chartData={top,bot,phases,tip,t0:top[0][0][0],t1:top[0][top[0].length-1][0]};
   drawAll();
 }
 function phaseColor(p){ return {BOOST:'--ph-boost',COAST:'--ph-coast',DROGUE:'--ph-drogue',APOGEE:'--ph-drogue',MAIN_DEPLOY:'--ph-main',DESCENT:'--ph-main',PAD_READY:'--ph-pad'}[p]; }
 function setup(cv){ const dpr=devicePixelRatio||1, w=cv.clientWidth, h=+cv.getAttribute('height'); cv.width=w*dpr; cv.height=h*dpr; cv.style.height=h+'px'; const g=cv.getContext('2d'); g.setTransform(dpr,0,0,dpr,0,0); return [g,w,h]; }
 const PAD={l:52,r:10,t:8,b:20};
-function drawChart(cv,series,cols,hoverT){
-  const [g,w,h]=setup(cv), C=chartData; let lo=Infinity,hi=-Infinity;
+// C: {t0,t1,phases?}; series: arrays of [x,y]; xUnit: suffix for the x labels
+function drawChart(cv,C,series,cols,hoverT,xUnit='s',dots=false){
+  const [g,w,h]=setup(cv); let lo=Infinity,hi=-Infinity;
   for(const s of series) for(const p of s){ if(p[1]<lo)lo=p[1]; if(p[1]>hi)hi=p[1]; }
   if(hi===lo){hi+=1;lo-=1;} const pad=(hi-lo)*0.05; lo-=pad; hi+=pad;
   const X=t=>PAD.l+(t-C.t0)/(C.t1-C.t0||1)*(w-PAD.l-PAD.r), Y=v=>PAD.t+(hi-v)/(hi-lo)*(h-PAD.t-PAD.b);
-  // phase bands
-  for(let i=0;i<C.phases.length;i++){ const [t,p]=C.phases[i], tn=i+1<C.phases.length?C.phases[i+1][0]:C.t1, c=phaseColor(p); if(!c) continue; g.fillStyle=css(c); g.fillRect(X(t),PAD.t,Math.max(1,X(tn)-X(t)),h-PAD.t-PAD.b); }
-  // grid + axes
+  const ph=C.phases||[];
+  for(let i=0;i<ph.length;i++){ const [t,p]=ph[i], tn=i+1<ph.length?ph[i+1][0]:C.t1, c=phaseColor(p); if(!c) continue; g.fillStyle=css(c); g.fillRect(X(t),PAD.t,Math.max(1,X(tn)-X(t)),h-PAD.t-PAD.b); }
   g.strokeStyle=css('--grid'); g.fillStyle=css('--ink2'); g.font='11px system-ui'; g.lineWidth=1;
   const step=niceStep((hi-lo)/4); for(let v=Math.ceil(lo/step)*step;v<=hi;v+=step){ const y=Math.round(Y(v))+.5; g.beginPath(); g.moveTo(PAD.l,y); g.lineTo(w-PAD.r,y); g.stroke(); g.fillText(+v.toFixed(2),4,y+4); }
-  const ts=niceStep((C.t1-C.t0)/8); for(let t=Math.ceil(C.t0/ts)*ts;t<=C.t1;t+=ts){ g.fillText(+t.toFixed(1)+'s',X(t)-12,h-5); }
-  series.forEach((s,i)=>{ g.strokeStyle=css(cols[i]); g.lineWidth=2; g.lineJoin='round'; g.beginPath(); s.forEach((p,j)=>j?g.lineTo(X(p[0]),Y(p[1])):g.moveTo(X(p[0]),Y(p[1]))); g.stroke(); });
+  const ts=niceStep((C.t1-C.t0)/8); for(let t=Math.ceil(C.t0/ts)*ts;t<=C.t1;t+=ts){ g.fillText(+t.toFixed(2)+xUnit,X(t)-12,h-5); }
+  series.forEach((s,i)=>{ g.strokeStyle=g.fillStyle=css(cols[i]); g.lineWidth=2; g.lineJoin='round'; g.beginPath(); s.forEach((p,j)=>j?g.lineTo(X(p[0]),Y(p[1])):g.moveTo(X(p[0]),Y(p[1]))); g.stroke();
+    if(dots) s.forEach(p=>{ g.beginPath(); g.arc(X(p[0]),Y(p[1]),4,0,7); g.fill(); g.strokeStyle=css('--surface'); g.lineWidth=2; g.stroke(); g.strokeStyle=css(cols[i]); }); });
   if(hoverT!=null){ g.strokeStyle=css('--ink2'); g.lineWidth=1; g.beginPath(); g.moveTo(X(hoverT)+.5,PAD.t); g.lineTo(X(hoverT)+.5,h-PAD.b); g.stroke(); }
-  return {X,w};
 }
 function niceStep(x){ const p=Math.pow(10,Math.floor(Math.log10(x||1))), m=x/p; return (m<1.5?1:m<3.5?2:m<7.5?5:10)*p; }
 let hoverT=null;
-function drawAll(){ if(!chartData) return; drawChart(c1,[chartData.baro,chartData.ema],['--s1','--s2'],hoverT); drawChart(c2,[chartData.acc],['--s1'],hoverT); }
+function drawAll(){
+  if(chartData){ drawChart(c1,chartData,chartData.top,['--s1','--s2'],hoverT,'s',D.isBase); drawChart(c2,chartData,chartData.bot,['--s1'],hoverT,'s',D.isBase); }
+  if(thrustData) drawChart(c3,thrustData,[thrustData.pts],['--s1'],null,'s');
+}
 function nearest(arr,t){ let lo=0,hi=arr.length-1; while(hi-lo>1){ const m=(lo+hi)>>1; if(arr[m][0]<t) lo=m; else hi=m; } return arr.length?(Math.abs(arr[lo][0]-t)<Math.abs(arr[hi][0]-t)?arr[lo]:arr[hi]):null; }
 function hook(cv,tip){
   const tAt=e=>{ const r=cv.getBoundingClientRect(), C=chartData; return C.t0+(e.clientX-r.left-PAD.l)/(r.width-PAD.l-PAD.r)*(C.t1-C.t0); };
   cv.onmousemove=e=>{ if(!chartData) return; hoverT=tAt(e); drawAll();
-    const C=chartData, b=nearest(C.baro,hoverT), m=nearest(C.ema,hoverT), a=nearest(C.acc,hoverT), p=nearest(C.phases,hoverT);
-    for(const [t,el] of [[tip1,c1],[tip2,c2]]){ t.style.display='block'; t.innerHTML=`t ${hoverT.toFixed(2)} s · ${p?p[1]:''}<br>baro ${b?b[1].toFixed(1):'-'} m · EMA ${m?m[1]:'-'} m<br>accel ${a?a[1].toFixed(2):'-'} g`;
+    for(const [t,el] of [[tip1,c1],[tip2,c2]]){ t.style.display='block'; t.innerHTML=chartData.tip(hoverT);
       const r=el.getBoundingClientRect(), x=e.clientX-r.left; t.style.left=Math.min(x+12,r.width-t.offsetWidth-4)+'px'; t.style.top='4px'; }
   };
   cv.onmouseleave=()=>{ hoverT=null; tip1.style.display=tip2.style.display='none'; drawAll(); };
   cv.onclick=e=>{ if(chartData) jumpTo(tAt(e)); };
+}
+// Thrust curve (page 0x0E). The rocket never wrote it to its own flash (the log
+// path has no 0x0E builder), so it only exists where a base received it.
+let thrustData=null;
+function renderThrust(){
+  thrustData=null;
+  const r=D.recs.find(r=>inSel(r)&&!r.bad&&((r.kind==='TELEM'&&r.d.page==='THRUST')||r.kind==='THRUST'));
+  if(!r){ thrustCard.style.display='none'; return; }
+  const o=r.type===0xAF?11:1, dv=rd(r.pl), dur=dv.getUint16(o,true), mn=dv.getInt16(o+2,true)*8, mx=dv.getInt16(o+4,true)*8, smp=r.pl.subarray(o+6);
+  const n=smp.length, pts=Array.from(smp,(v,i)=>[i*dur/1000/n,(mn+v*(mx-mn)/255)/1000]);
+  thrustCard.style.display='';
+  thrustInfo.textContent=`rec ${r.rec}, t=${r.t.toFixed(3)} s: ${n} samples over ${dur} ms (${(dur/n).toFixed(0)} ms apart, decimated not averaged), ${mn}…${mx} mg. Window starts 1 s before launch detect and ends at COAST entry.`;
+  thrustData={pts,t0:0,t1:dur/1000};
 }
 hook(c1,tip1); hook(c2,tip2);
 addEventListener('resize',drawAll);
