@@ -8,3 +8,4 @@ base_station/data/
 .vscode/launch.json
 .vscode/c_cpp_properties.json
 /References
+__pycache__/
