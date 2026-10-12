@@ -35,7 +35,7 @@ Clock: UTC pages put rocket uptime 0 at **01:33:38 UTC** (consistent from t=100 
 | ~835 → | descending at a steady 100–110 m/s, accel magnitude ≈ 1 g | terminal velocity, no drag device |
 | 840.27 (+43.4) | **last record**, 01:47:38 UTC | raw baro 349 m MSL = **86 m AGL**; EMA 452 m MSL = **189 m AGL**; still DROGUE |
 
-Not in the flash: 759.02–766.43 s (pad, armed). That 4 KB sector holds two record streams bit-ANDed together — it was written over without being erased. Same thing happened twice before in this dump (records 351371 and 363896–364059). Nothing flight-relevant was in it.
+Not in the flash: 759.02–766.43 s (pad, armed). That 4 KB sector was programmed over the previous lap's data without being erased, so it holds the two record streams bit-ANDed together (NOR programming can only clear bits). Cause found: `LogStore::writeRecord()` only erased ahead when a record overflowed into the next sector. When a record filled a sector exactly, the next sector was entered without an erase-ahead, so the sector after that was never erased. All 3 exact fills in the surviving log are followed by a corrupt sector, and there are no other corrupt sectors: records 351371 (idle at home, t≈1625 s), 363896–364059 (idle at home, t≈1960 s), and 473407–473608 (this one). None of them coincide with a reboot, high g or the impact. Fixed in `common/log_store.h` (rocket and base share it).
 
 ## Questions answered
 
@@ -69,7 +69,7 @@ Not in the flash: 759.02–766.43 s (pad, armed). That 4 KB sector holds two rec
 - **Sensor limits hit**: accel clipped at 16 g for the whole burn. Gyro clipped (±2000 °/s) for most of boost and descent. Gyro X has a +36 °/s offset at rest. The magnetometer reads 0,0,0 throughout.
 - **PEAKS page**: max altitude comes from GPS (1474 m was a bad first fix after reacquire), and max vertical speed comes from baro vvel (1754.8 m/s spike). Cosmetic.
 - **After the flight**: boots 476445–579280 read all-zero accel and baro (sensor board disconnected in the impact?), working again from 579281.
-- **Flash corruption**: the log writer's erase-ahead skips the erase when the next sector's first byte is 0xFF, and doesn't check the read result. The corrupted sector's old first byte was not 0xFF, so this doesn't fully explain it; root cause undetermined. For the NAND logger: per-record CRC, and verify after erase.
+- **Flash corruption**: see the timeline note; it was the exact-sector-fill erase-ahead bug, now fixed.
 
 ## Would it have saved the rocket?
 

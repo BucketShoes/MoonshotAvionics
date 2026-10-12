@@ -146,7 +146,16 @@ public:
     // Now actually advance if needed
     if (soff + totalSize > SECTOR_SIZE) {
       virtualPos_ += (SECTOR_SIZE - soff);
+    }
 
+    // Entering a new sector: erase the one after it. This must also run when
+    // the previous record filled the last sector exactly (we arrive at offset 0
+    // without the overflow branch above). Before this was handled, that case
+    // skipped one erase-ahead and the following sector was programmed over the
+    // previous lap's data, bit-ANDing the two (seen 3 times in the 2026-09
+    // rocket dump, every exact fill on the second lap, one of them on the pad
+    // while armed).
+    if (virtualPos_ % SECTOR_SIZE == 0) {
       uint32_t newSector = physSector(virtualPos_);
       uint32_t aheadSector = physSector(virtualPos_ + SECTOR_SIZE);
       if (dbg) {
